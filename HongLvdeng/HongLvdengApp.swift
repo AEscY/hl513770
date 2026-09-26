@@ -5,7 +5,7 @@ import Foundation
 
 struct HLCandle {
     let date: String
-    let openPrice: Double
+    let open: Double
     let high: Double
     let low: Double
     let close: Double
@@ -378,7 +378,7 @@ final class HLModel: ObservableObject {
                 let amplitude = HLDouble(parts, 43)
                 let tText = HLTimeText(HLStr(parts, 30))
                 out[key] = HLQuote(code: key, name: HLStr(parts, 1), price: price,
-                                   preClose: pre, openPrice: op, high: hi, low: lo,
+                                   preClose: pre, open: op, high: hi, low: lo,
                                    volume: vol, amount: amt, turnover: turnover,
                                    volRatio: volRatio, amplitude: amplitude,
                                    timeText: tText, source: "腾讯")
@@ -481,7 +481,7 @@ final class HLModel: ObservableObject {
                 if hi <= 0 { hi = price }
                 if lo <= 0 { lo = price }
                 out[origKey] = HLQuote(code: origKey, name: name, price: price,
-                                       preClose: pre, openPrice: op, high: hi, low: lo,
+                                       preClose: pre, open: op, high: hi, low: lo,
                                        volume: vol, amount: amt, turnover: 0,
                                        volRatio: 0, amplitude: 0,
                                        timeText: tText, source: "新浪")
@@ -1065,7 +1065,7 @@ struct HLSignalView: View {
                     hrow("现价", hfmt(m.lastPrice, 3), HLText)
                     hrow("涨跌幅", hfmtPct(m.quote?.changePct), hcolor(m.quote?.changePct))
                     hrow("涨跌额", hfmt(m.quote?.change, 4), hcolor(m.quote?.change))
-                    hrow("今开", hfmt(m.quote?.openPrice, 3), HLText)
+                    hrow("今开", hfmt(m.quote?.open, 3), HLText)
                     hrow("最高", hfmt(m.quote?.high, 3), Color(red: 1.0, green: 0.30, blue: 0.37))
                     hrow("最低", hfmt(m.quote?.low, 3), Color(red: 0.0, green: 0.84, blue: 0.56))
                     hrow("昨收", hfmt(m.quote?.preClose, 3), HLDim)
