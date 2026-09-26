@@ -1,0 +1,27 @@
+name: HongLvdeng
+options:
+  bundleIdPrefix: com.local
+  deploymentTarget:
+    iOS: "15.0"
+settings:
+  base:
+    PRODUCT_NAME: HongLvdeng
+    SWIFT_VERSION: "5.5"
+    TARGETED_DEVICE_FAMILY: "1"
+    INFOPLIST_FILE: HongLvdeng/Info.plist
+targets:
+  HongLvdeng:
+    type: application
+    platform: iOS
+    sources:
+      - HongLvdeng
+    resources:
+      - HongLvdeng/Assets.xcassets
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.local.honglvdeng
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: ""
+        CODE_SIGNING_REQUIRED: NO
+        CODE_SIGNING_ALLOWED: NO
