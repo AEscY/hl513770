@@ -491,7 +491,14 @@ final class HLModel: ObservableObject {
         task.resume()
     }
 
-    // 腾讯代码 -> 新浪代码
+    // 腾讯代码 -> K线接口代码（新浪K线不支持 s_ 前缀，指数必须用 sh000001 这种）
+    static func klineCode(_ code: String) -> String {
+        // 去掉误加的 s_ 前缀
+        if code.hasPrefix("s_") { return String(code.dropFirst(2)) }
+        return code
+    }
+
+    // 腾讯代码 -> 新浪实时代码
     static func sinaCode(_ code: String) -> String {
         if code.hasPrefix("hk") {
             return "rt_" + code
@@ -524,7 +531,8 @@ final class HLModel: ObservableObject {
     }
 
     func loadSinaKLine(_ code: String, scale: Int, len: Int, done: @escaping ([HLCandle]) -> Void) {
-        let sc = HLModel.sinaCode(code)
+        // 关键：K线必须用原始代码。s_ 前缀（指数实时用）在K线接口会返回 null。
+        let sc = HLModel.klineCode(code)
         let urlStr = "https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData?symbol="
             + sc + "&scale=" + String(scale) + "&ma=no&datalen=" + String(len)
         guard let url = URL(string: urlStr) else {
@@ -662,6 +670,14 @@ final class HLModel: ObservableObject {
                 self.loadAll()
             }
         }
+    }
+
+    // 切换标的：立即重新加载，不依赖 View 的 onChange（iOS 15 上更可靠）
+    func select(_ code: String) {
+        if curCode == code { return }
+        curCode = code
+        loadAll()
+        refreshWatch()
     }
 
     func remove(code: String) {
@@ -1575,7 +1591,7 @@ struct HLWatchView: View {
                             Circle().fill(w.code == m.curCode ? HLAccent : HLDim2)
                                 .frame(width: 9, height: 9)
                             Button {
-                                m.curCode = w.code
+                                m.select(w.code)
                                 m.loadAll()
                             } label: {
                                 HStack {
@@ -1964,6 +1980,8 @@ struct HLChartView: View {
                 }
                 .padding(13)
                 .background(RoundedRectangle(cornerRadius: 14).fill(HLCard))
+                // 持仓与加仓计算（原计算页，已合并进来）
+                HLCalcView()
             }
             .padding(10)
         }
@@ -2033,8 +2051,7 @@ struct HLCalcView: View {
     var tNet: Double { (hiP - loP) * 100 - fee * 2 }
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: 10) {
+        VStack(spacing: 10) {
                 // 持仓
                 VStack(spacing: 8) {
                     Text("我的持仓")
@@ -2150,9 +2167,6 @@ struct HLCalcView: View {
                     .font(.system(size: 10))
                     .foregroundColor(HLDim2)
             }
-            .padding(10)
-        }
-        .background(Color(red: 0.043, green: 0.051, blue: 0.071))
         .onAppear { loadPos() }
         .onChange(of: m.curCode) { _ in loadPos() }
         .onChange(of: costText) { _ in savePos() }
@@ -2354,12 +2368,9 @@ struct HLRootView: View {
             HLChartView()
                 .tabItem { Label("图表", systemImage: "chart.xyaxis.line") }
                 .tag(3)
-            HLCalcView()
-                .tabItem { Label("计算", systemImage: "number") }
-                .tag(4)
             HLWatchView()
                 .tabItem { Label("自选", systemImage: "list.bullet") }
-                .tag(5)
+                .tag(4)
         }
         .accentColor(HLAccent)
         .onAppear {
