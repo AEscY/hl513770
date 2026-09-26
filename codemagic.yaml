@@ -16,10 +16,9 @@ workflows:
         script: |
           xcodegen generate
           ls -la
-      - name: 编译并打包
+      - name: 编译
         script: |
-          # 关键：不能在 set -e 下让 xcodebuild 直接中止脚本，
-          # 否则下面的 grep 永远执行不到。用 || true 吞掉退出码。
+          # 不加 set -e：xcodebuild 失败时仍要往下走，才能打印错误
           xcodebuild \
             -project HongLvdeng.xcodeproj \
             -scheme HongLvdeng \
@@ -29,40 +28,34 @@ workflows:
             -derivedDataPath build \
             ONLY_ACTIVE_ARCH=NO \
             SWIFT_TREAT_WARNINGS_AS_ERRORS=NO \
+            SWIFT_STRICT_CONCURRENCY=minimal \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGN_INJECT_BASE_ENTITLEMENTS=NO \
-            > xcodebuild.log 2>&1 || echo "xcodebuild 退出码: $?（已继续）"
-
-          echo ""
-          echo "########## 错误行 error: ##########"
-          grep -n "error:" xcodebuild.log | head -60
-          echo "########## 错误行 结束 ##########"
-          echo ""
-          echo "########## 失败摘要 ##########"
-          grep -nE "[0-9]+ failures?\)|BUILD FAILED|Build failed" xcodebuild.log | tail -5
-          echo "########## 摘要 结束 ##########"
-          echo ""
-          echo "########## 若上面无 error 行，输出日志末尾 120 行 ##########"
-          if ! grep -q "error:" xcodebuild.log; then
-            tail -120 xcodebuild.log
-          fi
-
-          # 只有真正成功才继续
-          if [ ! -d "build/Build/Products/Release-iphoneos/HongLvdeng.app" ]; then
-            echo "编译未产出 .app"
-            exit 1
+            > xcodebuild.log 2>&1
+          echo "xcodebuild 退出码: $?"
+          grep "error:" xcodebuild.log > ERRORS.txt || true
+          echo "@@@@@@@@@@ error: 行（共 $(wc -l < ERRORS.txt | tr -d ' ') 行）@@@@@@@@@@"
+          cat ERRORS.txt
+          echo "@@@@@@@@@@ 结束 @@@@@@@@@@"
+          if [ ! -s ERRORS.txt ]; then
+            echo "（无 error 行，输出末尾 150 行）"
+            tail -150 xcodebuild.log
           fi
       - name: 打包 IPA
         script: |
-          set -e
-          APP="build/Build/Products/Release-iphoneos/HongLvdeng.app"
+          if [ ! -d "build/Build/Products/Release-iphoneos/HongLvdeng.app" ]; then
+            echo "未产出 .app，跳过打包"
+            exit 1
+          fi
           rm -rf Payload && mkdir -p Payload
-          cp -r "$APP" Payload/
+          cp -r build/Build/Products/Release-iphoneos/HongLvdeng.app Payload/
           command -v ldid >/dev/null 2>&1 && ldid -S Payload/HongLvdeng.app/HongLvdeng || true
           zip -qry HongLvdeng.ipa Payload
           ls -lh HongLvdeng.ipa
     artifacts:
       - HongLvdeng.ipa
+      - ERRORS.txt
       - xcodebuild.log
+      - /tmp/xcodebuild_logs/*.log
