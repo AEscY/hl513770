@@ -1898,8 +1898,7 @@ struct HLChartView: View {
     }
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: 10) {
+        VStack(spacing: 10) {
                 // 走势
                 VStack(spacing: 8) {
                     Text("走势 · 信号色带")
@@ -1980,12 +1979,7 @@ struct HLChartView: View {
                 }
                 .padding(13)
                 .background(RoundedRectangle(cornerRadius: 14).fill(HLCard))
-                // 持仓与加仓计算（原计算页，已合并进来）
-                HLCalcView()
             }
-            .padding(10)
-        }
-        .background(Color(red: 0.043, green: 0.051, blue: 0.071))
     }
 }
 
@@ -2051,7 +2045,8 @@ struct HLCalcView: View {
     var tNet: Double { (hiP - loP) * 100 - fee * 2 }
 
     var body: some View {
-        VStack(spacing: 10) {
+        ScrollView {
+            VStack(spacing: 10) {
                 // 持仓
                 VStack(spacing: 8) {
                     Text("我的持仓")
@@ -2167,6 +2162,9 @@ struct HLCalcView: View {
                     .font(.system(size: 10))
                     .foregroundColor(HLDim2)
             }
+            .padding(10)
+        }
+        .background(Color(red: 0.043, green: 0.051, blue: 0.071))
         .onAppear { loadPos() }
         .onChange(of: m.curCode) { _ in loadPos() }
         .onChange(of: costText) { _ in savePos() }
@@ -2340,6 +2338,9 @@ struct HLProView: View {
                 .padding(13)
                 .background(RoundedRectangle(cornerRadius: 14).fill(HLCard))
 
+                // 走势与回测（原图表页，已合并进来）
+                HLChartView()
+
                 Text("指标基于历史K线实时计算，仅描述已发生的价格结构，不预测未来。\n本工具仅为纪律辅助，不构成投资建议。")
                     .font(.system(size: 10))
                     .foregroundColor(HLDim2)
@@ -2365,8 +2366,8 @@ struct HLRootView: View {
             HLProView()
                 .tabItem { Label("专业", systemImage: "chart.bar.doc.horizontal") }
                 .tag(2)
-            HLChartView()
-                .tabItem { Label("图表", systemImage: "chart.xyaxis.line") }
+            HLCalcView()
+                .tabItem { Label("计算", systemImage: "number") }
                 .tag(3)
             HLWatchView()
                 .tabItem { Label("自选", systemImage: "list.bullet") }
