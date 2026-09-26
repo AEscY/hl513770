@@ -9,7 +9,8 @@ struct LineChart: View {
 
     var body: some View {
         GeometryReader { geo in
-            let w = geo.size.width, h = geo.size.height
+            let w = geo.size.width
+            let h = geo.size.height
             let bandH: CGFloat = 12
             let plotH = h - bandH - 6
             let lo = series.min() ?? 0
@@ -75,17 +76,18 @@ struct EquityChart: View {
 
     var body: some View {
         GeometryReader { geo in
-            let w = geo.size.width, h = geo.size.height
+            let w = geo.size.width
+            let h = geo.size.height
             let all = holdCurve + stratCurve
-            let lo = all.min() ?? 0, hi = all.max() ?? 1
+            let lo = all.min() ?? 0
+            let hi = all.max() ?? 1
             let range = max(hi - lo, 1e-9)
-            func x(_ i: Int, n: Int) -> CGFloat { CGFloat(i) / CGFloat(max(n - 1, 1)) * w }
-            func y(_ v: Double) -> CGFloat { (1 - CGFloat((v - lo) / range)) * h }
 
             ZStack {
                 Path { p in
-                    p.move(to: CGPoint(x: 0, y: y(1)))
-                    p.addLine(to: CGPoint(x: w, y: y(1)))
+                    let y1 = (1 - CGFloat((1 - lo) / range)) * h
+                    p.move(to: CGPoint(x: 0, y: y1))
+                    p.addLine(to: CGPoint(x: w, y: y1))
                 }
                 .stroke(Color.dim2, lineWidth: 1)
 

@@ -5,18 +5,21 @@ workflows:
     instance_type: mac_mini_m2
     environment:
       xcode: latest
-      groups:
-        - default
     scripts:
       - name: 安装 xcodegen
         script: |
           brew install xcodegen || brew upgrade xcodegen || true
           xcodegen --version
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
       - name: 生成工程
-        script: xcodegen generate
+        script: |
+          xcodegen generate
+          ls -la
       - name: 编译并打包
         script: |
-          set -e
+          # 关键：不能在 set -e 下让 xcodebuild 直接中止脚本，
+          # 否则下面的 grep 永远执行不到。用 || true 吞掉退出码。
           xcodebuild \
             -project HongLvdeng.xcodeproj \
             -scheme HongLvdeng \
@@ -25,14 +28,41 @@ workflows:
             -destination 'generic/platform=iOS' \
             -derivedDataPath build \
             ONLY_ACTIVE_ARCH=NO \
+            SWIFT_TREAT_WARNINGS_AS_ERRORS=NO \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
-            CODE_SIGN_INJECT_BASE_ENTITLEMENTS=NO
+            CODE_SIGN_INJECT_BASE_ENTITLEMENTS=NO \
+            > xcodebuild.log 2>&1 || echo "xcodebuild 退出码: $?（已继续）"
+
+          echo ""
+          echo "########## 错误行 error: ##########"
+          grep -n "error:" xcodebuild.log | head -60
+          echo "########## 错误行 结束 ##########"
+          echo ""
+          echo "########## 失败摘要 ##########"
+          grep -nE "[0-9]+ failures?\)|BUILD FAILED|Build failed" xcodebuild.log | tail -5
+          echo "########## 摘要 结束 ##########"
+          echo ""
+          echo "########## 若上面无 error 行，输出日志末尾 120 行 ##########"
+          if ! grep -q "error:" xcodebuild.log; then
+            tail -120 xcodebuild.log
+          fi
+
+          # 只有真正成功才继续
+          if [ ! -d "build/Build/Products/Release-iphoneos/HongLvdeng.app" ]; then
+            echo "编译未产出 .app"
+            exit 1
+          fi
+      - name: 打包 IPA
+        script: |
+          set -e
           APP="build/Build/Products/Release-iphoneos/HongLvdeng.app"
           rm -rf Payload && mkdir -p Payload
           cp -r "$APP" Payload/
           command -v ldid >/dev/null 2>&1 && ldid -S Payload/HongLvdeng.app/HongLvdeng || true
           zip -qry HongLvdeng.ipa Payload
+          ls -lh HongLvdeng.ipa
     artifacts:
       - HongLvdeng.ipa
+      - xcodebuild.log

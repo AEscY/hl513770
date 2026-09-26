@@ -102,7 +102,7 @@ struct SignalView: View {
                             ZStack(alignment: .leading) {
                                 Capsule().fill(Color.card2).frame(height: 6)
                                 Capsule().fill(LinearGradient(
-                                    colors: [.down, .warn, .up],
+                                    gradient: Gradient(colors: [.down, .warn, .up]),
                                     startPoint: .leading, endPoint: .trailing))
                                     .frame(width: max(0, geo.size.width * CGFloat(vm.percentile / 100)), height: 6)
                             }
