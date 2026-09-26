@@ -30,9 +30,9 @@ struct LineChart: View {
                 .stroke(Color.line, lineWidth: 1)
 
                 // 信号色带
-                ForEach(Array(bands.enumerated()), id: \.offset) { idx, s in
+                ForEach(Array(bands.indices), id: \.self) { idx in
                     Rectangle()
-                        .fill(s.color.opacity(0.55))
+                        .fill(bands[idx].color.opacity(0.55))
                         .frame(width: w / CGFloat(max(bands.count, 1)) + 0.6, height: bandH)
                         .position(x: x(idx) + (w / CGFloat(max(bands.count, 1))) / 2,
                                   y: plotH + 4 + bandH / 2)

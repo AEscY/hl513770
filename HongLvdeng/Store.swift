@@ -75,54 +75,71 @@ final class Store: ObservableObject {
 
 // MARK: - 预设清单
 
+/// 预设项。必须用 struct 而不是 tuple —— Swift 的 KeyPath 不支持 tuple，
+/// ForEach(id:\.code) 对 tuple 数组会编译失败。
+struct PresetItem: Identifiable {
+    var id: String { code }
+    let code: String
+    let name: String
+    let note: String
+    let weight: Double
+
+    init(code: String, name: String, note: String = "", weight: Double = 0) {
+        self.code = code
+        self.name = name
+        self.note = note
+        self.weight = weight
+    }
+}
+
 enum Presets {
     /// 常用标的，添加页可直接点
-    static let quick: [(code: String, name: String)] = [
-        ("sh513770", "港股互联网ETF"),
-        ("sh510300", "沪深300ETF"),
-        ("sz159915", "创业板ETF"),
-        ("sh588000", "科创50ETF"),
-        ("sh512880", "证券ETF"),
-        ("sh513180", "恒生科技ETF"),
-        ("sz159941", "纳指ETF"),
-        ("sh518880", "黄金ETF"),
-        ("sh000001", "上证指数"),
-        ("sh000300", "沪深300"),
-        ("sz399006", "创业板指"),
-        ("sh000688", "科创50")
+    static let quick: [PresetItem] = [
+        PresetItem(code: "sh513770", name: "港股互联网ETF"),
+        PresetItem(code: "sh510300", name: "沪深300ETF"),
+        PresetItem(code: "sz159915", name: "创业板ETF"),
+        PresetItem(code: "sh588000", name: "科创50ETF"),
+        PresetItem(code: "sh512880", name: "证券ETF"),
+        PresetItem(code: "sh513180", name: "恒生科技ETF"),
+        PresetItem(code: "sz159941", name: "纳指ETF"),
+        PresetItem(code: "sh518880", name: "黄金ETF"),
+        PresetItem(code: "sh000001", name: "上证指数"),
+        PresetItem(code: "sh000300", name: "沪深300"),
+        PresetItem(code: "sz399006", name: "创业板指"),
+        PresetItem(code: "sh000688", name: "科创50")
     ]
 
     /// 隔夜外围
-    static let globalIdx: [(code: String, name: String, note: String)] = [
-        ("hkHSTECH", "恒生科技", "港股科技 · 直接相关"),
-        ("hkHSI", "恒生指数", "港股大盘"),
-        ("usIXIC", "纳斯达克", "美股科技"),
-        ("usDJI", "道琼斯", "美股大盘"),
-        ("usINX", "标普500", "美股大盘")
+    static let globalIdx: [PresetItem] = [
+        PresetItem(code: "hkHSTECH", name: "恒生科技", note: "港股科技 · 直接相关"),
+        PresetItem(code: "hkHSI", name: "恒生指数", note: "港股大盘"),
+        PresetItem(code: "usIXIC", name: "纳斯达克", note: "美股科技"),
+        PresetItem(code: "usDJI", name: "道琼斯", note: "美股大盘"),
+        PresetItem(code: "usINX", name: "标普500", note: "美股大盘")
     ]
 
     /// 中概股 ADR（权重 %）
-    static let adrs: [(code: String, name: String, weight: Double)] = [
-        ("usBABA", "阿里巴巴", 14.0),
-        ("usTCEHY", "腾讯ADR", 13.5),
-        ("usBIDU", "百度", 12.0),
-        ("usJD", "京东", 4.0),
-        ("usNTES", "网易", 6.0),
-        ("usPDD", "拼多多", 3.0)
+    static let adrs: [PresetItem] = [
+        PresetItem(code: "usBABA", name: "阿里巴巴", weight: 14.0),
+        PresetItem(code: "usTCEHY", name: "腾讯ADR", weight: 13.5),
+        PresetItem(code: "usBIDU", name: "百度", weight: 12.0),
+        PresetItem(code: "usJD", name: "京东", weight: 4.0),
+        PresetItem(code: "usNTES", name: "网易", weight: 6.0),
+        PresetItem(code: "usPDD", name: "拼多多", weight: 3.0)
     ]
 
     /// 港股互联网前十大成分股（权重 %）
-    static let holdings: [(code: String, name: String, weight: Double)] = [
-        ("hk00700", "腾讯控股", 13.5),
-        ("hk09988", "阿里巴巴", 14.0),
-        ("hk09888", "百度", 12.0),
-        ("hk01810", "小米", 9.9),
-        ("hk03690", "美团", 9.4),
-        ("hk09999", "网易", 6.0),
-        ("hk01024", "快手", 5.5),
-        ("hk09961", "携程", 4.5),
-        ("hk09626", "B站", 3.0),
-        ("hk00020", "商汤", 2.0)
+    static let holdings: [PresetItem] = [
+        PresetItem(code: "hk00700", name: "腾讯控股", weight: 13.5),
+        PresetItem(code: "hk09988", name: "阿里巴巴", weight: 14.0),
+        PresetItem(code: "hk09888", name: "百度", weight: 12.0),
+        PresetItem(code: "hk01810", name: "小米", weight: 9.9),
+        PresetItem(code: "hk03690", name: "美团", weight: 9.4),
+        PresetItem(code: "hk09999", name: "网易", weight: 6.0),
+        PresetItem(code: "hk01024", name: "快手", weight: 5.5),
+        PresetItem(code: "hk09961", name: "携程", weight: 4.5),
+        PresetItem(code: "hk09626", name: "B站", weight: 3.0),
+        PresetItem(code: "hk00020", name: "商汤", weight: 2.0)
     ]
 }
 
@@ -132,7 +149,7 @@ enum CodeUtil {
     /// 6 位数字自动补市场前缀
     static func normalize(_ s: String) -> String? {
         let t = s.trimmingCharacters(in: .whitespaces).lowercased()
-        if t.count == 6, let _ = Int(t) { return t }        // 已带前缀的按原样处理见下
+        if t.count == 6, Int(t) != nil { return t }        // 已带前缀的按原样处理见下
         if t.hasPrefix("sh") || t.hasPrefix("sz") || t.hasPrefix("bj") || t.hasPrefix("hk") || t.hasPrefix("us") { return t }
         return nil
     }
@@ -140,7 +157,7 @@ enum CodeUtil {
     /// 纯 6 位数字判断市场
     static func fromSix(_ s: String) -> String? {
         let t = s.trimmingCharacters(in: .whitespaces)
-        guard t.count == 6, let _ = Int(t) else { return nil }
+        guard t.count == 6, Int(t) != nil else { return nil }
         switch t.first {
         case "6", "5", "9": return "sh" + t
         case "0", "2", "3", "1": return "sz" + t

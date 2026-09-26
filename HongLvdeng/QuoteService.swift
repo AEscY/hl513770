@@ -30,8 +30,8 @@ final class QuoteService {
         guard let url = URL(string: "https://qt.gtimg.cn/q=" + list) else {
             completion([:]); return
         }
-        session.dataTask(with: url) { [weak self] data, _, err in
-            guard let self = self, let data = data, err == nil else {
+        session.dataTask(with: url) { data, _, err in
+            guard let data = data, err == nil else {
                 DispatchQueue.main.async { completion([:]) }
                 return
             }
