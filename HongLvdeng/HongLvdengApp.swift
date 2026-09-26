@@ -952,6 +952,333 @@ final class HLModel: ObservableObject {
         if p < m60! { return .yellow }
         return .green
     }
+    // MARK: - 专业指标：MACD / KDJ / OBV / 威廉 / 多周期均线
+
+    // EMA 指数移动平均
+    func ema(_ k: Int, _ src: [Double]? = nil) -> [Double] {
+        let a = src ?? closes
+        if a.isEmpty { return [] }
+        let alpha = 2.0 / (Double(k) + 1.0)
+        var out: [Double] = []
+        var prev = a[0]
+        out.append(prev)
+        var i = 1
+        while i < a.count {
+            prev = alpha * a[i] + (1 - alpha) * prev
+            out.append(prev)
+            i += 1
+        }
+        return out
+    }
+
+    // MACD (12,26,9)
+    var macdDIF: Double? {
+        if closes.count < 26 { return nil }
+        let e12 = ema(12)
+        let e26 = ema(26)
+        if e12.isEmpty || e26.isEmpty { return nil }
+        return e12[e12.count - 1] - e26[e26.count - 1]
+    }
+
+    var macdDEA: Double? {
+        if closes.count < 35 { return nil }
+        let e12 = ema(12)
+        let e26 = ema(26)
+        if e12.count != e26.count || e12.isEmpty { return nil }
+        var difSeries: [Double] = []
+        var i = 0
+        while i < e12.count {
+            difSeries.append(e12[i] - e26[i])
+            i += 1
+        }
+        let dea = ema(9, difSeries)
+        return dea.isEmpty ? nil : dea[dea.count - 1]
+    }
+
+    var macdHist: Double? {
+        let d = macdDIF
+        let e = macdDEA
+        if d == nil || e == nil { return nil }
+        return (d! - e!) * 2
+    }
+
+    var macdText: String {
+        let d = macdDIF
+        let e = macdDEA
+        if d == nil || e == nil { return "—" }
+        if d! > e! && d! > 0 { return "金叉 · 多头" }
+        if d! > e! { return "金叉 · 零轴下" }
+        if d! < e! && d! < 0 { return "死叉 · 空头" }
+        return "死叉 · 零轴上"
+    }
+
+    var macdColor: Color {
+        let d = macdDIF
+        let e = macdDEA
+        if d == nil || e == nil { return HLDim }
+        return d! > e! ? Color(red: 0.0, green: 0.84, blue: 0.56) : Color(red: 1.0, green: 0.30, blue: 0.37)
+    }
+
+    // KDJ (9,3,3)
+    var kdj: (k: Double, d: Double, j: Double)? {
+        let c = closes
+        let h = highs
+        let l = lows
+        if c.count < 9 { return nil }
+        var kVal = 50.0
+        var dVal = 50.0
+        var i = 8
+        while i < c.count {
+            var hh = h[i]
+            var ll = l[i]
+            var j = i - 8
+            while j <= i {
+                if h[j] > hh { hh = h[j] }
+                if l[j] < ll { ll = l[j] }
+                j += 1
+            }
+            let rsv = hh > ll ? (c[i] - ll) / (hh - ll) * 100 : 50
+            kVal = (2.0 / 3.0) * kVal + (1.0 / 3.0) * rsv
+            dVal = (2.0 / 3.0) * dVal + (1.0 / 3.0) * kVal
+            i += 1
+        }
+        return (kVal, dVal, 3 * kVal - 2 * dVal)
+    }
+
+    var kdjText: String {
+        let v = kdj
+        if v == nil { return "—" }
+        let k = v!.k
+        let d = v!.d
+        if k > 80 { return "超买区" }
+        if k < 20 { return "超卖区" }
+        return k > d ? "金叉向上" : "死叉向下"
+    }
+
+    // 威廉指标 %R (14)
+    var williamsR: Double? {
+        let c = closes
+        let h = highs
+        let l = lows
+        if c.count < 14 { return nil }
+        let i = c.count - 1
+        var hh = h[i]
+        var ll = l[i]
+        var j = i - 13
+        while j <= i {
+            if h[j] > hh { hh = h[j] }
+            if l[j] < ll { ll = l[j] }
+            j += 1
+        }
+        if hh <= ll { return nil }
+        return (hh - c[i]) / (hh - ll) * -100
+    }
+
+    // OBV 能量潮（用成交量加权）
+    var obvTrend: String {
+        let c = closes
+        if c.count < 21 { return "—" }
+        var up = 0
+        var down = 0
+        var i = c.count - 20
+        while i < c.count {
+            if c[i] > c[i - 1] { up += 1 }
+            else if c[i] < c[i - 1] { down += 1 }
+            i += 1
+        }
+        if up > down + 3 { return "量能偏多" }
+        if down > up + 3 { return "量能偏空" }
+        return "量能均衡"
+    }
+
+    // 多周期均线
+    func maLine(_ k: Int) -> Double? { ma(k) }
+
+    var maArrangement: String {
+        let m5 = ma(5)
+        let m10 = ma(10)
+        let m20 = ma(20)
+        let m60 = ma(60)
+        if m5 == nil || m10 == nil || m20 == nil || m60 == nil { return "—" }
+        if m5! > m10! && m10! > m20! && m20! > m60! { return "完美多头排列" }
+        if m5! < m10! && m10! < m20! && m20! < m60! { return "完全空头排列" }
+        if m5! > m20! { return "短期偏多 · 中期待确认" }
+        return "短期偏空 · 中期承压"
+    }
+
+    // 支撑压力位（近60日 pivot）
+    var pivotLevels: [Double] {
+        let h = highs
+        let l = lows
+        if h.count < 20 { return [] }
+        let n = min(60, h.count)
+        let start = h.count - n
+        var levels: [Double] = []
+        var i = start + 2
+        while i < h.count - 2 {
+            if h[i] >= h[i-1] && h[i] >= h[i-2] && h[i] >= h[i+1] && h[i] >= h[i+2] {
+                levels.append(h[i])
+            }
+            if l[i] <= l[i-1] && l[i] <= l[i-2] && l[i] <= l[i+1] && l[i] <= l[i+2] {
+                levels.append(l[i])
+            }
+            i += 1
+        }
+        levels.sort()
+        return levels
+    }
+
+    var resistance: Double? {
+        let p = pivotLevels
+        if p.isEmpty { return nil }
+        var i = 0
+        while i < p.count {
+            if p[i] > lastPrice { return p[i] }
+            i += 1
+        }
+        return nil
+    }
+
+    var support: Double? {
+        let p = pivotLevels
+        if p.isEmpty { return nil }
+        var i = p.count - 1
+        while i >= 0 {
+            if p[i] < lastPrice { return p[i] }
+            i -= 1
+        }
+        return nil
+    }
+
+    // 回撤分析
+    var currentDrawdown: Double {
+        let c = closes
+        if c.isEmpty { return 0 }
+        let peak = c.max() ?? 0
+        if peak <= 0 { return 0 }
+        return (peak - lastPrice) / peak * 100
+    }
+
+    var maxDrawdown: Double { btDDHold * 100 }
+
+    // 信号统计（近120日各灯天数）
+    var signalStats: (red: Int, yellow: Int, green: Int) {
+        let c = closes
+        if c.isEmpty { return (0, 0, 0) }
+        let n = min(120, c.count)
+        let start = c.count - n
+        var r = 0
+        var y = 0
+        var g = 0
+        var i = start
+        while i < c.count {
+            let sig = bandAt(i)
+            if sig == .red { r += 1 }
+            else if sig == .yellow { y += 1 }
+            else if sig == .green { g += 1 }
+            i += 1
+        }
+        return (r, y, g)
+    }
+
+    // 布林带位置（0=下轨, 1=上轨）
+    var bollPosition: Double? {
+        let u = bollUp
+        let l = bollLow
+        if u == nil || l == nil { return nil }
+        if u! <= l! { return nil }
+        return (lastPrice - l!) / (u! - l!)
+    }
+
+    // 量价关系
+    var volumeState: String {
+        if candles.count < 21 { return "—" }
+        let q = quote
+        if q == nil { return "—" }
+        // 用换手率近似
+        if q!.turnover > 8 { return "明显放量" }
+        if q!.turnover < 2 { return "明显缩量" }
+        return "量能正常"
+    }
+
+    // 综合评分（技术面打分 0-100）
+    var techScore: Int {
+        var score = 50
+        // 均线
+        if ma(20) != nil && ma(60) != nil {
+            if lastPrice > ma(20)! { score += 10 }
+            if lastPrice > ma(60)! { score += 10 }
+            if ma(20)! > ma(60)! { score += 10 }
+        }
+        // MACD
+        if macdDIF != nil && macdDEA != nil {
+            if macdDIF! > macdDEA! { score += 10 }
+        }
+        // KDJ
+        if let kd = kdj {
+            if kd.k < 20 { score += 10 }
+            if kd.k > 80 { score -= 10 }
+        }
+        // RSI
+        if let r = rsi(14) {
+            if r < 30 { score += 10 }
+            if r > 70 { score -= 10 }
+        }
+        // 威廉
+        if let w = williamsR {
+            if w < -80 { score += 10 }
+            if w > -20 { score -= 10 }
+        }
+        if score < 0 { score = 0 }
+        if score > 100 { score = 100 }
+        return score
+    }
+
+    var scoreText: String {
+        let v = techScore
+        if v >= 70 { return "强势" }
+        if v >= 55 { return "偏强" }
+        if v >= 45 { return "中性" }
+        if v >= 30 { return "偏弱" }
+        return "弱势"
+    }
+
+    var kValue: Double? {
+        let v = kdj
+        if v == nil { return nil }
+        return v!.k
+    }
+    var dValue: Double? {
+        let v = kdj
+        if v == nil { return nil }
+        return v!.d
+    }
+    var jValue: Double? {
+        let v = kdj
+        if v == nil { return nil }
+        return v!.j
+    }
+
+    var redDays: Int { signalStats.red }
+    var yellowDays: Int { signalStats.yellow }
+    var greenDays: Int { signalStats.green }
+
+    var bollPosText: String {
+        let p = bollPosition
+        if p == nil { return "—" }
+        let v = p!
+        if v >= 0.8 { return "贴近上轨 · 超买" }
+        if v >= 0.5 { return "中轨上方" }
+        if v >= 0.2 { return "中轨下方" }
+        return "贴近下轨 · 超卖"
+    }
+
+    var scoreColor: Color {
+        let v = techScore
+        if v >= 70 { return Color(red: 0.0, green: 0.84, blue: 0.56) }
+        if v >= 45 { return Color(red: 1.0, green: 0.69, blue: 0.13) }
+        return Color(red: 1.0, green: 0.30, blue: 0.37)
+    }
 }
 
 // MARK: - 格式化
@@ -1669,6 +1996,23 @@ struct HLCalcView: View {
     @State var hiText: String = ""
     @State var loText: String = ""
     @State var feeText: String = "0.05"
+    @State var planText: String = ""
+
+    var plan: Double { Double(planText) ?? 0 }
+    var batch1: Double { plan * 0.3 }
+    var batch2: Double { plan * 0.3 }
+    var batch3: Double { plan * 0.4 }
+    var batch1Text: String { plan > 0 ? hfmt(batch1, 0) + " 元 @" + hfmt(m.lastPrice, 3) : "—" }
+    var batch2Text: String { plan > 0 ? hfmt(batch2, 0) + " 元 @" + hfmt(m.lastPrice * 0.95, 3) : "—" }
+    var batch3Text: String { plan > 0 ? hfmt(batch3, 0) + " 元 @" + hfmt(m.lastPrice * 0.90, 3) : "—" }
+    var exposurePct: Double { plan > 0 ? (m.lastPrice * qty) / plan * 100 : 0 }
+    var exposureText: String { plan > 0 ? hfmt(exposurePct, 1) + "%" : "—" }
+    var exposureColor: Color {
+        if plan <= 0 { return HLDim }
+        if exposurePct > 80 { return Color(red: 1.0, green: 0.30, blue: 0.37) }
+        if exposurePct > 50 { return Color(red: 1.0, green: 0.69, blue: 0.13) }
+        return Color(red: 0.0, green: 0.84, blue: 0.56)
+    }
 
     var cost: Double { Double(costText) ?? 0 }
     var qty: Double { Double(qtyText) ?? 0 }
@@ -1747,6 +2091,37 @@ struct HLCalcView: View {
                     Text("当天必须买回。卖完没跌回来就认了，别追高买回。")
                         .font(.system(size: 10))
                         .foregroundColor(HLDim2)
+                }
+                .padding(13)
+                .background(RoundedRectangle(cornerRadius: 14).fill(HLCard))
+
+                // 分批建仓计划
+                VStack(spacing: 8) {
+                    Text("分三批建仓计划（绿灯后可参考）")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundColor(HLDim)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    HLField("计划投入资金（元）", $planText)
+                    hrow("第1批 30% · 现价", batch1Text, HLDim)
+                    hrow("第2批 30% · 再跌5%", batch2Text, HLDim)
+                    hrow("第3批 40% · 再跌10%", batch3Text, HLDim)
+                    Text("分批的意义不是提高收益，是避免一次性买在阶段高点。每批之间建议间隔观察。")
+                        .font(.system(size: 10))
+                        .foregroundColor(HLDim2)
+                }
+                .padding(13)
+                .background(RoundedRectangle(cornerRadius: 14).fill(HLCard))
+
+                // 风险敞口
+                VStack(spacing: 6) {
+                    Text("风险敞口")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundColor(HLDim)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    hrow("持仓市值", hfmt(m.lastPrice * qty, 2) + " 元", HLText)
+                    hrow("占总资金", exposureText, exposureColor)
+                    hrow("单日波动(1×ATR)", hfmt((m.atr() ?? 0) * qty, 2) + " 元", HLDim)
+                    hrow("跌到止损亏损", hfmt((stopLevel - cost) * qty, 2) + " 元", Color(red: 1.0, green: 0.30, blue: 0.37))
                 }
                 .padding(13)
                 .background(RoundedRectangle(cornerRadius: 14).fill(HLCard))
@@ -1831,6 +2206,136 @@ struct HLField: View {
     }
 }
 
+// MARK: - 专业分析页
+
+struct HLProView: View {
+    @EnvironmentObject var m: HLModel
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 10) {
+                // 综合评分
+                VStack(spacing: 9) {
+                    Text("技术面综合评分")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundColor(HLDim)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    HStack(spacing: 13) {
+                        ZStack {
+                            Circle()
+                                .stroke(HLDim2, lineWidth: 5)
+                                .frame(width: 72, height: 72)
+                            Circle()
+                                .trim(from: 0, to: CGFloat(m.techScore) / 100.0)
+                                .stroke(m.scoreColor, lineWidth: 5)
+                                .frame(width: 72, height: 72)
+                                .rotationEffect(.degrees(-90))
+                            Text(String(m.techScore))
+                                .font(.system(size: 23, weight: .bold))
+                                .foregroundColor(m.scoreColor)
+                        }
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text(m.scoreText)
+                                .font(.system(size: 17, weight: .bold))
+                                .foregroundColor(m.scoreColor)
+                            Text("由均线/MACD/KDJ/RSI/威廉\n多维加权得出")
+                                .font(.system(size: 10))
+                                .foregroundColor(HLDim2)
+                        }
+                        Spacer()
+                    }
+                }
+                .padding(13)
+                .background(RoundedRectangle(cornerRadius: 14).fill(HLCard))
+
+                // MACD
+                VStack(spacing: 6) {
+                    Text("MACD (12,26,9)")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundColor(HLDim)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    hrow("DIF", hfmt(m.macdDIF, 4), HLText)
+                    hrow("DEA", hfmt(m.macdDEA, 4), HLText)
+                    hrow("MACD柱", hfmt(m.macdHist, 4), hcolor(m.macdHist))
+                    hrow("状态", m.macdText, m.macdColor)
+                }
+                .padding(13)
+                .background(RoundedRectangle(cornerRadius: 14).fill(HLCard))
+
+                // KDJ + 威廉 + RSI
+                VStack(spacing: 6) {
+                    Text("摆动指标")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundColor(HLDim)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    hrow("KDJ · K", hfmt(m.kValue, 1), HLText)
+                    hrow("KDJ · D", hfmt(m.dValue, 1), HLText)
+                    hrow("KDJ · J", hfmt(m.jValue, 1), HLText)
+                    hrow("KDJ 状态", m.kdjText, HLDim)
+                    hrow("威廉 %R (14)", hfmt(m.williamsR, 1), HLDim)
+                    hrow("RSI(24)", hfmt(m.rsi(24), 1), HLDim)
+                }
+                .padding(13)
+                .background(RoundedRectangle(cornerRadius: 14).fill(HLCard))
+
+                // 多周期均线
+                VStack(spacing: 6) {
+                    Text("多周期均线")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundColor(HLDim)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    hrow("MA5", hfmt(m.ma(5), 4), HLText)
+                    hrow("MA10", hfmt(m.ma(10), 4), HLText)
+                    hrow("MA20", hfmt(m.ma(20), 4), HLText)
+                    hrow("MA60", hfmt(m.ma(60), 4), HLText)
+                    hrow("MA120", hfmt(m.ma(120), 4), HLText)
+                    hrow("MA250", hfmt(m.ma(250), 4), HLText)
+                    hrow("排列形态", m.maArrangement, HLDim)
+                }
+                .padding(13)
+                .background(RoundedRectangle(cornerRadius: 14).fill(HLCard))
+
+                // 支撑压力
+                VStack(spacing: 6) {
+                    Text("支撑压力（近60日枢轴点）")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundColor(HLDim)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    hrow("上方压力", hfmt(m.resistance, 4), Color(red: 1.0, green: 0.30, blue: 0.37))
+                    hrow("现价", hfmt(m.lastPrice, 4), HLText)
+                    hrow("下方支撑", hfmt(m.support, 4), Color(red: 0.0, green: 0.84, blue: 0.56))
+                    hrow("布林带位置", m.bollPosText, HLDim)
+                }
+                .padding(13)
+                .background(RoundedRectangle(cornerRadius: 14).fill(HLCard))
+
+                // 回撤与信号统计
+                VStack(spacing: 6) {
+                    Text("回撤与信号分布")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundColor(HLDim)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    hrow("当前回撤", hfmt(m.currentDrawdown, 1) + "%", Color(red: 1.0, green: 0.30, blue: 0.37))
+                    hrow("区间最大回撤", hfmt(m.maxDrawdown, 1) + "%", HLDim)
+                    hrow("近120日 红灯", String(m.redDays) + " 天", Color(red: 1.0, green: 0.30, blue: 0.37))
+                    hrow("近120日 黄灯", String(m.yellowDays) + " 天", Color(red: 1.0, green: 0.69, blue: 0.13))
+                    hrow("近120日 绿灯", String(m.greenDays) + " 天", Color(red: 0.0, green: 0.84, blue: 0.56))
+                    hrow("量价", m.volumeState, HLDim)
+                    hrow("量能趋势", m.obvTrend, HLDim)
+                }
+                .padding(13)
+                .background(RoundedRectangle(cornerRadius: 14).fill(HLCard))
+
+                Text("指标基于历史K线实时计算，仅描述已发生的价格结构，不预测未来。\n本工具仅为纪律辅助，不构成投资建议。")
+                    .font(.system(size: 10))
+                    .foregroundColor(HLDim2)
+            }
+            .padding(10)
+        }
+        .background(Color(red: 0.043, green: 0.051, blue: 0.071))
+    }
+}
+
 struct HLRootView: View {
     @EnvironmentObject var m: HLModel
     @State var tab: Int = 0
@@ -1843,15 +2348,18 @@ struct HLRootView: View {
             HLSignalView()
                 .tabItem { Label("信号", systemImage: "lightbulb.fill") }
                 .tag(1)
+            HLProView()
+                .tabItem { Label("专业", systemImage: "chart.bar.doc.horizontal") }
+                .tag(2)
             HLChartView()
                 .tabItem { Label("图表", systemImage: "chart.xyaxis.line") }
-                .tag(2)
+                .tag(3)
             HLCalcView()
                 .tabItem { Label("计算", systemImage: "number") }
-                .tag(3)
+                .tag(4)
             HLWatchView()
                 .tabItem { Label("自选", systemImage: "list.bullet") }
-                .tag(4)
+                .tag(5)
         }
         .accentColor(HLAccent)
         .onAppear {

@@ -6,19 +6,38 @@ workflows:
     environment:
       xcode: latest
     scripts:
-      - name: 安装 xcodegen
+      - name: 环境检查
+        script: |
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+          swiftc --version 2>&1 | head -3
+      - name: 真实语法检查（swiftc -parse）
+        script: |
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          echo "SDK: $SDK"
+          echo "=== 对源码做真实语法/语义解析 ==="
+          xcrun swiftc -parse \
+            -target arm64-apple-ios15.0 \
+            -sdk "$SDK" \
+            -swift-version 5 \
+            HongLvdeng/HongLvdengApp.swift 2>&1 | tee SYNTAX.txt
+          echo "@@@@@@@@@@ 语法检查退出码: $? @@@@@@@@@@"
+          echo "@@@@@@@@@@ 语法错误行数: $(grep -c 'error:' SYNTAX.txt) @@@@@@@@@@"
+          if grep -q "error:" SYNTAX.txt; then
+            echo "!!! 源码存在语法错误，打印全部错误 !!!"
+            grep -n "error:" SYNTAX.txt
+            echo "!!! 停止后续步骤 !!!"
+            exit 1
+          fi
+          echo "✓ 源码语法检查通过"
+      - name: 安装 xcodegen 并生成工程
         script: |
           brew install xcodegen || brew upgrade xcodegen || true
-          xcodegen --version
-          xcodebuild -version
-      - name: 生成工程
-        script: |
           xcodegen generate
-          echo "=== 生成的 target / product 名 ==="
+          echo "=== 工程 target 列表 ==="
           xcodebuild -project HongLvdeng.xcodeproj -list
       - name: 编译
         script: |
-          # 关键：必须检查退出码。否则编译失败也会显示"完成"。
           xcodebuild \
             -project HongLvdeng.xcodeproj \
             -scheme HongLvdeng \
@@ -37,69 +56,58 @@ workflows:
           CODE=$?
           echo "@@@@@@@@@@ xcodebuild 退出码: $CODE @@@@@@@@@@"
           grep "error:" xcodebuild.log > ERRORS.txt || true
-          echo "@@@@@@@@@@ error: 行（共 $(wc -l < ERRORS.txt | tr -d ' ') 行）@@@@@@@@@@"
+          echo "@@@@@@@@@@ error 行数: $(wc -l < ERRORS.txt | tr -d ' ') @@@@@@@@@@"
           cat ERRORS.txt
           echo "@@@@@@@@@@ 结束 @@@@@@@@@@"
           if [ $CODE -ne 0 ]; then
-            echo "编译失败，打印日志末尾 200 行："
-            tail -200 xcodebuild.log
+            echo "=== 编译失败，日志末尾 250 行 ==="
+            tail -250 xcodebuild.log
             exit 1
           fi
+          echo "✓ 编译成功"
       - name: 校验并打包
         script: |
           APP="build/Build/Products/Release-iphoneos/HongLvdeng.app"
-          echo "=== .app 是否存在 ==="
           ls -ld "$APP" || exit 1
-
-          echo "=== .app 全部文件（找二进制用）==="
+          echo "=== .app 内容 ==="
           find "$APP" -maxdepth 2 | head -60
 
-          echo "=== Info.plist 声明的可执行文件名 ==="
           DECLARED=$(/usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$APP/Info.plist" 2>/dev/null)
-          echo "声明为: [$DECLARED]"
+          echo "声明的可执行文件: [$DECLARED]"
 
-          # 自动探测真正的 Mach-O 二进制，不硬编码名字
           BIN=""
           if [ -n "$DECLARED" ] && [ -f "$APP/$DECLARED" ]; then
             BIN="$APP/$DECLARED"
-            echo "按声明找到: $BIN"
           else
-            echo "声明名不匹配，扫描 .app 内的 Mach-O 文件…"
             FOUND=$(find "$APP" -type f -perm -u+x 2>/dev/null | head -5)
-            echo "可执行权限文件: $FOUND"
             for f in $FOUND; do
-              if file "$f" | grep -q "Mach-O"; then
-                BIN="$f"
-                break
-              fi
+              if file "$f" | grep -q "Mach-O"; then BIN="$f"; break; fi
             done
-            echo "扫描结果: [$BIN]"
           fi
 
           if [ -z "$BIN" ]; then
-            echo "!!! 未找到 Mach-O 二进制，编译未产出可执行文件 !!!"
-            echo "=== 编译日志末尾 200 行 ==="
+            echo "!!! 未找到 Mach-O 二进制 !!!"
             tail -200 xcodebuild.log
             exit 1
           fi
 
-          echo "=== 二进制确认 ==="
-          ls -la "$BIN"
+          echo "=== 二进制: $BIN ==="
           file "$BIN"
+          ls -la "$BIN"
 
-          echo "=== ad-hoc 签名 ==="
           command -v ldid >/dev/null 2>&1 && ldid -S "$BIN" || true
           chmod +x "$BIN"
 
-          echo "=== 打包 ==="
           rm -rf Payload
           mkdir -p Payload
           cp -R "$APP" Payload/
-          ls -la "Payload/HongLvdeng.app/$(basename "$BIN")"
           zip -qry HongLvdeng.ipa Payload
           ls -lh HongLvdeng.ipa
+          echo "=== IPA 内二进制确认 ==="
+          unzip -l HongLvdeng.ipa | grep -E "HongLvdeng$|\.app/HongLvdeng$" || unzip -l HongLvdeng.ipa | tail -20
     artifacts:
       - HongLvdeng.ipa
+      - SYNTAX.txt
       - ERRORS.txt
       - xcodebuild.log
       - /tmp/xcodebuild_logs/*.log
