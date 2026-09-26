@@ -6,6 +6,8 @@
 	<string>红绿灯</string>
 	<key>CFBundleName</key>
 	<string>HongLvdeng</string>
+	<key>CFBundleExecutable</key>
+	<string>HongLvdeng</string>
 	<key>CFBundleIdentifier</key>
 	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
 	<key>CFBundleShortVersionString</key>

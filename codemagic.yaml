@@ -18,7 +18,6 @@ workflows:
           ls -la
       - name: 编译
         script: |
-          # 不加 set -e：xcodebuild 失败时仍要往下走，才能打印错误
           xcodebuild \
             -project HongLvdeng.xcodeproj \
             -scheme HongLvdeng \
@@ -43,17 +42,36 @@ workflows:
             echo "（无 error 行，输出末尾 150 行）"
             tail -150 xcodebuild.log
           fi
-      - name: 打包 IPA
+      - name: 校验并打包
         script: |
-          if [ ! -d "build/Build/Products/Release-iphoneos/HongLvdeng.app" ]; then
-            echo "未产出 .app，跳过打包"
-            exit 1
-          fi
-          rm -rf Payload && mkdir -p Payload
-          cp -r build/Build/Products/Release-iphoneos/HongLvdeng.app Payload/
-          command -v ldid >/dev/null 2>&1 && ldid -S Payload/HongLvdeng.app/HongLvdeng || true
+          APP="build/Build/Products/Release-iphoneos/HongLvdeng.app"
+          echo "=== .app 是否存在 ==="
+          ls -ld "$APP" || exit 1
+
+          echo "=== .app 内容 ==="
+          ls -la "$APP"
+
+          echo "=== 主二进制检查 ==="
+          BIN="$APP/HongLvdeng"
+          ls -la "$BIN" || exit 1
+          file "$BIN"
+
+          echo "=== Info.plist 的 CFBundleExecutable ==="
+          /usr/libexec/PlistBuddy -c "Print :CFBundleExecutable" "$APP/Info.plist" || exit 1
+
+          echo "=== ad-hoc 签名 ==="
+          command -v ldid >/dev/null 2>&1 && ldid -S "$BIN" || true
+          chmod +x "$BIN"
+
+          echo "=== 打包 ==="
+          rm -rf Payload
+          mkdir -p Payload
+          cp -R "$APP" Payload/
+          ls -la Payload/HongLvdeng.app/HongLvdeng
           zip -qry HongLvdeng.ipa Payload
           ls -lh HongLvdeng.ipa
+          echo "=== 校验 IPA 内的二进制 ==="
+          unzip -l HongLvdeng.ipa Payload/HongLvdeng.app/HongLvdeng
     artifacts:
       - HongLvdeng.ipa
       - ERRORS.txt
