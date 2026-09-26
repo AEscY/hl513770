@@ -5,7 +5,7 @@ import Foundation
 
 struct HLCandle {
     let date: String
-    let open: Double
+    let openPrice: Double
     let high: Double
     let low: Double
     let close: Double
@@ -16,8 +16,68 @@ struct HLQuote {
     let name: String
     let price: Double
     let preClose: Double
+    let open: Double
+    let high: Double
+    let low: Double
+    let volume: Double      // 手
+    let amount: Double      // 元
+    let turnover: Double    // 换手率 %
+    let volRatio: Double    // 量比
+    let amplitude: Double   // 振幅 %
+    let timeText: String    // 数据时间
+    let source: String      // 数据源
+
     var change: Double { price - preClose }
     var changePct: Double { preClose > 0 ? (price - preClose) / preClose * 100 : 0 }
+
+    var amountText: String {
+        if amount <= 0 { return "—" }
+        if amount >= 100000000 { return String(format: "%.2f 亿", amount / 100000000) }
+        if amount >= 10000 { return String(format: "%.2f 万", amount / 10000) }
+        return String(format: "%.0f 元", amount)
+    }
+    var volumeText: String {
+        if volume <= 0 { return "—" }
+        if volume >= 10000 { return String(format: "%.2f 万手", volume / 10000) }
+        return String(format: "%.0f 手", volume)
+    }
+}
+
+// 腾讯时间字段兼容：A股 20260924161443 / 港美股 2026/09/25 16:08:36
+func HLTimeText(_ raw: String) -> String {
+    if raw.isEmpty { return "" }
+    if raw.count == 14 {
+        let all = raw.allSatisfy { $0 >= "0" && $0 <= "9" }
+        if all {
+            let mo = String(raw.dropFirst(4).prefix(2))
+            let dy = String(raw.dropFirst(6).prefix(2))
+            let hh = String(raw.dropFirst(8).prefix(2))
+            let mm = String(raw.dropFirst(10).prefix(2))
+            return mo + "-" + dy + " " + hh + ":" + mm
+        }
+    }
+    // 2026/09/25 16:08:36 -> 09-25 16:08
+    let parts = raw.components(separatedBy: " ")
+    if parts.count >= 2 {
+        let d = parts[0].components(separatedBy: "/")
+        if d.count >= 3 {
+            let t = parts[1].components(separatedBy: ":")
+            if t.count >= 2 {
+                return d[1] + "-" + d[2] + " " + t[0] + ":" + t[1]
+            }
+        }
+    }
+    return raw
+}
+
+func HLDouble(_ parts: [String], _ i: Int) -> Double {
+    if i >= parts.count { return 0 }
+    return Double(parts[i]) ?? 0
+}
+
+func HLStr(_ parts: [String], _ i: Int) -> String {
+    if i >= parts.count { return "" }
+    return parts[i]
 }
 
 enum HLSignal: String {
@@ -204,6 +264,30 @@ final class HLModel: ObservableObject {
     var periodHigh: Double { closes.max() ?? 0 }
     var periodLow: Double { closes.min() ?? 0 }
 
+    var gapToYellow: Double {
+        let y = nextYellow
+        if y == nil { return 0 }
+        return y! - lastPrice
+    }
+
+    var maGap: Double {
+        let a = ma(20)
+        let b = ma(60)
+        if a == nil || b == nil { return 0 }
+        return a! - b!
+    }
+
+    var maGapText: String {
+        if ma(20) == nil || ma(60) == nil { return "—" }
+        if maGap >= 0 { return "多头排列 +" + hfmt(maGap, 4) }
+        return "空头排列 " + hfmt(maGap, 4)
+    }
+
+    var maGapColor: Color {
+        if ma(20) == nil || ma(60) == nil { return HLDim }
+        return maGap >= 0 ? Color(red: 0.0, green: 0.84, blue: 0.56) : Color(red: 1.0, green: 0.30, blue: 0.37)
+    }
+
     // MARK: - 网络
 
     static func gbkEncoding() -> String.Encoding {
@@ -212,101 +296,339 @@ final class HLModel: ObservableObject {
         return String.Encoding(rawValue: UInt(raw))
     }
 
+    // MARK: - 实时行情（腾讯主源 + 新浪备源，全部真实请求，无内嵌数据）
+
     func loadQuotes(_ codes: [String], done: @escaping ([String: HLQuote]) -> Void) {
         if codes.isEmpty {
             DispatchQueue.main.async { done([:]) }
             return
         }
-        let list = codes.joined(separator: ",")
-        let urlStr = "https://qt.gtimg.cn/q=" + list
-        if let url = URL(string: urlStr) {
-            let task = URLSession.shared.dataTask(with: url) { data, _, err in
-                if err != nil || data == nil {
-                    DispatchQueue.main.async { done([:]) }
-                    return
-                }
-                let enc = HLModel.gbkEncoding()
-                let text = String(data: data!, encoding: enc)
-                var out: [String: HLQuote] = [:]
-                if let t = text {
-                    let lines = t.components(separatedBy: ";")
-                    for line in lines {
-                        let tr = line.trimmingCharacters(in: .whitespacesAndNewlines)
-                        if tr.hasPrefix("v_") == false { continue }
-                        if let eq = tr.firstIndex(of: "=") {
-                            let start = tr.index(tr.startIndex, offsetBy: 2)
-                            let key = String(tr[start..<eq])
-                            var body = String(tr[tr.index(after: eq)...])
-                            body = body.trimmingCharacters(in: CharacterSet(charactersIn: "\"\n\r "))
-                            let parts = body.components(separatedBy: "~")
-                            if parts.count >= 6 {
-                                let price = Double(parts[3]) ?? 0
-                                let pre = Double(parts[4]) ?? 0
-                                if price > 0 {
-                                    out[key] = HLQuote(code: key, name: parts[1],
-                                                        price: price, preClose: pre)
-                                }
-                            }
-                        }
-                    }
-                }
-                DispatchQueue.main.async { done(out) }
+        loadTencent(codes) { map in
+            if map.isEmpty == false {
+                DispatchQueue.main.async { done(map) }
+                return
             }
-            task.resume()
-        } else {
-            DispatchQueue.main.async { done([:]) }
+            // 主源失败，走新浪备源
+            self.loadSina(codes) { map2 in
+                DispatchQueue.main.async { done(map2) }
+            }
         }
     }
 
-    func loadHistory(_ code: String, done: @escaping ([HLCandle]) -> Void) {
-        let urlStr = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=" + code + ",day,,,320,qfq"
-        if let url = URL(string: urlStr) {
-            let task = URLSession.shared.dataTask(with: url) { data, _, err in
-                if err != nil || data == nil {
-                    DispatchQueue.main.async { done([]) }
-                    return
+    func loadTencent(_ codes: [String], done: @escaping ([String: HLQuote]) -> Void) {
+        let list = codes.joined(separator: ",")
+        var comps = URLComponents(string: "https://qt.gtimg.cn/q=" + list)
+        if comps == nil {
+            done([:])
+            return
+        }
+        guard let url = comps!.url else {
+            done([:])
+            return
+        }
+        var req = URLRequest(url: url)
+        req.setValue("https://gu.qq.com/", forHTTPHeaderField: "Referer")
+        req.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 15_6 like Mac OS X) AppleWebKit/605.1.15",
+                     forHTTPHeaderField: "User-Agent")
+        req.timeoutInterval = 12
+
+        let task = URLSession.shared.dataTask(with: req) { data, _, err in
+            if err != nil || data == nil {
+                done([:])
+                return
+            }
+            let enc = HLModel.gbkEncoding()
+            guard let text = String(data: data!, encoding: enc) else {
+                done([:])
+                return
+            }
+            var out: [String: HLQuote] = [:]
+            let lines = text.components(separatedBy: ";")
+            for rawLine in lines {
+                let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+                if line.hasPrefix("v_") == false { continue }
+                guard let eq = line.firstIndex(of: "=") else { continue }
+                let startIdx = line.index(line.startIndex, offsetBy: 2)
+                if startIdx >= eq { continue }
+                let key = String(line[startIdx..<eq])
+                var body = String(line[line.index(after: eq)...])
+                body = body.trimmingCharacters(in: CharacterSet(charactersIn: "\"\n\r "))
+                let parts = body.components(separatedBy: "~")
+                if parts.count < 6 { continue }
+                let price = HLDouble(parts, 3)
+                if price <= 0 { continue }
+                let pre = HLDouble(parts, 4)
+                let op = HLDouble(parts, 5)
+                var hi = HLDouble(parts, 33)
+                var lo = HLDouble(parts, 34)
+                if hi <= 0 { hi = price }
+                if lo <= 0 { lo = price }
+                var vol = HLDouble(parts, 36)
+                if vol <= 0 { vol = HLDouble(parts, 6) }
+                var amtWan = HLDouble(parts, 37)
+                var amt = amtWan * 10000
+                if amt <= 0 {
+                    // 从组合字段 价/量/额 里取
+                    let comb = HLStr(parts, 35)
+                    let cp = comb.components(separatedBy: "/")
+                    if cp.count >= 3 { amt = HLDouble(cp, 2) }
                 }
-                var out: [HLCandle] = []
-                if let obj = try? JSONSerialization.jsonObject(with: data!) as? [String: Any] {
-                    if let d = obj["data"] as? [String: Any] {
-                        if let node = d[code] as? [String: Any] {
-                            var raw: [[Any]] = []
-                            if let q = node["qfqday"] as? [[Any]] { raw = q }
-                            else if let q = node["day"] as? [[Any]] { raw = q }
-                            for item in raw {
-                                if item.count < 5 { continue }
-                                if let dt = item[0] as? String {
-                                    let o = Double("\(item[1])") ?? 0
-                                    let c = Double("\(item[2])") ?? 0
-                                    let h = Double("\(item[3])") ?? 0
-                                    let l = Double("\(item[4])") ?? 0
-                                    if c > 0 {
-                                        let short = dt.count >= 10 ? String(dt.suffix(5)) : dt
-                                        out.append(HLCandle(date: short, open: o, high: h, low: l, close: c))
-                                    }
-                                }
+                let turnover = HLDouble(parts, 38)
+                let volRatio = HLDouble(parts, 49)
+                let amplitude = HLDouble(parts, 43)
+                let tText = HLTimeText(HLStr(parts, 30))
+                out[key] = HLQuote(code: key, name: HLStr(parts, 1), price: price,
+                                   preClose: pre, openPrice: op, high: hi, low: lo,
+                                   volume: vol, amount: amt, turnover: turnover,
+                                   volRatio: volRatio, amplitude: amplitude,
+                                   timeText: tText, source: "腾讯")
+            }
+            done(out)
+        }
+        task.resume()
+    }
+
+    func loadSina(_ codes: [String], done: @escaping ([String: HLQuote]) -> Void) {
+        var sinaCodes: [String] = []
+        var keyMap: [String: String] = [:]
+        for c in codes {
+            let sc = HLModel.sinaCode(c)
+            sinaCodes.append(sc)
+            keyMap[sc] = c
+        }
+        let list = sinaCodes.joined(separator: ",")
+        guard let url = URL(string: "https://hq.sinajs.cn/list=" + list) else {
+            done([:])
+            return
+        }
+        var req = URLRequest(url: url)
+        req.setValue("https://finance.sina.com.cn", forHTTPHeaderField: "Referer")
+        req.timeoutInterval = 12
+
+        let task = URLSession.shared.dataTask(with: req) { data, _, err in
+            if err != nil || data == nil {
+                done([:])
+                return
+            }
+            let enc = HLModel.gbkEncoding()
+            guard let text = String(data: data!, encoding: enc) else {
+                done([:])
+                return
+            }
+            var out: [String: HLQuote] = [:]
+            let lines = text.components(separatedBy: ";")
+            for rawLine in lines {
+                let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+                if line.hasPrefix("var hq_str_") == false { continue }
+                guard let eq = line.firstIndex(of: "=") else { continue }
+                let startIdx = line.index(line.startIndex, offsetBy: 11)
+                if startIdx >= eq { continue }
+                let sc = String(line[startIdx..<eq])
+                let origKey = keyMap[sc] ?? sc
+                var body = String(line[line.index(after: eq)...])
+                body = body.trimmingCharacters(in: CharacterSet(charactersIn: "\"\n\r "))
+                let parts = body.components(separatedBy: ",")
+                if parts.count < 6 { continue }
+
+                var name = ""
+                var price = 0.0
+                var pre = 0.0
+                var op = 0.0
+                var hi = 0.0
+                var lo = 0.0
+                var vol = 0.0
+                var amt = 0.0
+                var tText = ""
+
+                if sc.hasPrefix("gb_") {
+                    // 美股：名称,现价,涨跌幅%,时间,涨跌额,开盘,最高,最低,52高,52低,成交量...
+                    name = HLStr(parts, 0)
+                    price = HLDouble(parts, 1)
+                    let pct = HLDouble(parts, 2)
+                    tText = HLTimeText(HLStr(parts, 3))
+                    let chg = HLDouble(parts, 4)
+                    pre = price - chg
+                    if pre <= 0 && pct != 0 { pre = price / (1 + pct / 100) }
+                    op = HLDouble(parts, 5)
+                    hi = HLDouble(parts, 6)
+                    lo = HLDouble(parts, 7)
+                    vol = HLDouble(parts, 10)
+                } else if sc.hasPrefix("rt_hk") {
+                    // 港股：英文名,中文名,开盘,昨收,最高,最低,现价,涨跌额,涨跌幅,...
+                    name = HLStr(parts, 1)
+                    if name.isEmpty { name = HLStr(parts, 0) }
+                    op = HLDouble(parts, 2)
+                    pre = HLDouble(parts, 3)
+                    hi = HLDouble(parts, 4)
+                    lo = HLDouble(parts, 5)
+                    price = HLDouble(parts, 6)
+                    if parts.count > 16 { tText = HLTimeText(HLStr(parts, 17)) }
+                } else {
+                    // A股/指数：名称,今开,昨收,现价,最高,最低,买一,卖一,成交量,成交额,...
+                    name = HLStr(parts, 0)
+                    op = HLDouble(parts, 1)
+                    pre = HLDouble(parts, 2)
+                    price = HLDouble(parts, 3)
+                    hi = HLDouble(parts, 4)
+                    lo = HLDouble(parts, 5)
+                    if parts.count > 9 {
+                        vol = HLDouble(parts, 8) / 100.0
+                        amt = HLDouble(parts, 9)
+                    }
+                    if parts.count > 31 { tText = HLStr(parts, 30) }
+                }
+                if price <= 0 { continue }
+                if hi <= 0 { hi = price }
+                if lo <= 0 { lo = price }
+                out[origKey] = HLQuote(code: origKey, name: name, price: price,
+                                       preClose: pre, openPrice: op, high: hi, low: lo,
+                                       volume: vol, amount: amt, turnover: 0,
+                                       volRatio: 0, amplitude: 0,
+                                       timeText: tText, source: "新浪")
+            }
+            done(out)
+        }
+        task.resume()
+    }
+
+    // 腾讯代码 -> 新浪代码
+    static func sinaCode(_ code: String) -> String {
+        if code.hasPrefix("hk") {
+            return "rt_" + code
+        }
+        if code.hasPrefix("us") {
+            let tail = String(code.dropFirst(2)).lowercased()
+            return "gb_" + tail
+        }
+        if code.hasPrefix("sh") || code.hasPrefix("sz") {
+            // 6 位纯数字且以 000 开头的指数用 s_ 前缀
+            let num = String(code.dropFirst(2))
+            if num.hasPrefix("000") { return "s_" + code }
+            return code
+        }
+        return code
+    }
+
+    // MARK: - 历史 K 线（新浪 JSON 主源 + 腾讯备源）
+
+    func loadHistory(_ code: String, done: @escaping ([HLCandle]) -> Void) {
+        loadSinaKLine(code, scale: 240, len: 320) { list in
+            if list.isEmpty == false {
+                DispatchQueue.main.async { done(list) }
+                return
+            }
+            self.loadTencentKLine(code) { list2 in
+                DispatchQueue.main.async { done(list2) }
+            }
+        }
+    }
+
+    func loadSinaKLine(_ code: String, scale: Int, len: Int, done: @escaping ([HLCandle]) -> Void) {
+        let sc = HLModel.sinaCode(code)
+        let urlStr = "https://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_MarketData.getKLineData?symbol="
+            + sc + "&scale=" + String(scale) + "&ma=no&datalen=" + String(len)
+        guard let url = URL(string: urlStr) else {
+            done([])
+            return
+        }
+        var req = URLRequest(url: url)
+        req.setValue("https://finance.sina.com.cn", forHTTPHeaderField: "Referer")
+        req.timeoutInterval = 15
+
+        let task = URLSession.shared.dataTask(with: req) { data, _, err in
+            if err != nil || data == nil {
+                done([])
+                return
+            }
+            var out: [HLCandle] = []
+            if let arr = try? JSONSerialization.jsonObject(with: data!) as? [[String: Any]] {
+                for item in arr {
+                    let day = item["day"] as? String ?? ""
+                    let o = HLModel.num(item["open"])
+                    let h = HLModel.num(item["high"])
+                    let l = HLModel.num(item["low"])
+                    let c = HLModel.num(item["close"])
+                    if c > 0 {
+                        let short = day.count >= 10 ? String(day.suffix(5)) : day
+                        out.append(HLCandle(date: short, open: o, high: h, low: l, close: c))
+                    }
+                }
+            }
+            done(out)
+        }
+        task.resume()
+    }
+
+    // 腾讯 K 线字段顺序：日期,开,收,高,低,量
+    func loadTencentKLine(_ code: String, done: @escaping ([HLCandle]) -> Void) {
+        let urlStr = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=" + code + ",day,,,320,qfq"
+        guard let url = URL(string: urlStr) else {
+            done([])
+            return
+        }
+        var req = URLRequest(url: url)
+        req.setValue("https://gu.qq.com/", forHTTPHeaderField: "Referer")
+        req.timeoutInterval = 15
+
+        let task = URLSession.shared.dataTask(with: req) { data, _, err in
+            if err != nil || data == nil {
+                done([])
+                return
+            }
+            var out: [HLCandle] = []
+            if let obj = try? JSONSerialization.jsonObject(with: data!) as? [String: Any] {
+                if let d = obj["data"] as? [String: Any] {
+                    if let node = d[code] as? [String: Any] {
+                        var raw: [[Any]] = []
+                        if let q = node["qfqday"] as? [[Any]] { raw = q }
+                        else if let q = node["day"] as? [[Any]] { raw = q }
+                        for item in raw {
+                            if item.count < 5 { continue }
+                            guard let dt = item[0] as? String else { continue }
+                            let o = HLModel.num(item[1])
+                            let c = HLModel.num(item[2])
+                            let h = HLModel.num(item[3])
+                            let l = HLModel.num(item[4])
+                            if c > 0 {
+                                let short = dt.count >= 10 ? String(dt.suffix(5)) : dt
+                                out.append(HLCandle(date: short, open: o, high: h, low: l, close: c))
                             }
                         }
                     }
                 }
-                DispatchQueue.main.async { done(out) }
             }
-            task.resume()
-        } else {
-            DispatchQueue.main.async { done([]) }
+            done(out)
         }
+        task.resume()
+    }
+
+    static func num(_ v: Any?) -> Double {
+        if v == nil { return 0 }
+        if let d = v as? Double { return d }
+        if let n = v as? NSNumber { return n.doubleValue }
+        if let str = v as? String { return Double(str) ?? 0 }
+        return 0
     }
 
     func loadAll() {
         let code = curCode
         loadQuotes([code]) { map in
-            self.quote = map[code]
+            let q = map[code]
+            self.quote = q
+            if q != nil {
+                self.dataTime = q!.timeText
+                self.dataSource = q!.source
+                self.lastUpdate = Date()
+            }
             self.loadHistory(code) { list in
                 self.candles = list
                 if list.isEmpty {
-                    self.note = "数据获取失败"
+                    self.note = "K线获取失败"
                 } else {
                     self.note = "最新 " + (list.last?.date ?? "") + " · " + String(list.count) + " 个交易日"
+                }
+                self.loadSinaKLine(code, scale: 5, len: 48) { intra in
+                    self.intraday = intra
                 }
             }
         }
@@ -357,6 +679,10 @@ final class HLModel: ObservableObject {
     @Published var globalQuotes: [String: HLQuote] = [:]
     @Published var adrQuotes: [String: HLQuote] = [:]
     @Published var holdQuotes: [String: HLQuote] = [:]
+    @Published var intraday: [HLCandle] = []
+    @Published var dataTime: String = ""
+    @Published var dataSource: String = ""
+    @Published var lastUpdate: Date = Date()
 
     func loadBrief() {
         var g: [String] = []
@@ -671,9 +997,34 @@ func hrow(_ label: String, _ value: String, _ color: Color) -> some View {
 struct HLSignalView: View {
     @EnvironmentObject var m: HLModel
 
+    var plotW: CGFloat { UIScreen.main.bounds.width - 46 }
+
+    func pathFor(_ data: [Double], _ w: CGFloat, _ h: CGFloat) -> Path {
+        Path { p in
+            if data.count == 0 { return }
+            let lo = data.min() ?? 0
+            let hi = data.max() ?? 1
+            let range = hi - lo
+            if range <= 0 { return }
+            var i = 0
+            while i < data.count {
+                let x = CGFloat(i) / CGFloat(max(data.count - 1, 1)) * w
+                let y = (1 - CGFloat((data[i] - lo) / range)) * h
+                if i == 0 { p.move(to: CGPoint(x: x, y: y)) }
+                else { p.addLine(to: CGPoint(x: x, y: y)) }
+                i += 1
+            }
+        }
+    }
+
+    var intraCloses: [Double] { m.intraday.map { $0.close } }
+
     var body: some View {
         ScrollView {
             VStack(spacing: 10) {
+                // 数据源状态条
+                HLSourceBar()
+
                 // 灯
                 VStack(spacing: 9) {
                     HStack(spacing: 13) {
@@ -705,30 +1056,104 @@ struct HLSignalView: View {
                 .padding(13)
                 .background(RoundedRectangle(cornerRadius: 14).fill(HLCard))
 
-                // 行情
+                // 实时盘口
                 VStack(spacing: 6) {
+                    Text("实时盘口")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundColor(HLDim)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     hrow("现价", hfmt(m.lastPrice, 3), HLText)
                     hrow("涨跌幅", hfmtPct(m.quote?.changePct), hcolor(m.quote?.changePct))
+                    hrow("涨跌额", hfmt(m.quote?.change, 4), hcolor(m.quote?.change))
+                    hrow("今开", hfmt(m.quote?.openPrice, 3), HLText)
+                    hrow("最高", hfmt(m.quote?.high, 3), Color(red: 1.0, green: 0.30, blue: 0.37))
+                    hrow("最低", hfmt(m.quote?.low, 3), Color(red: 0.0, green: 0.84, blue: 0.56))
                     hrow("昨收", hfmt(m.quote?.preClose, 3), HLDim)
+                    hrow("成交量", m.quote?.volumeText ?? "—", HLDim)
+                    hrow("成交额", m.quote?.amountText ?? "—", HLDim)
+                }
+                .padding(13)
+                .background(RoundedRectangle(cornerRadius: 14).fill(HLCard))
+
+                // 分时
+                VStack(spacing: 8) {
+                    Text("分时走势 · 5分钟")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundColor(HLDim)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    if intraCloses.count < 2 {
+                        Text("非交易时段或暂无分时数据")
+                            .font(.system(size: 11))
+                            .foregroundColor(HLDim2)
+                            .frame(height: 110)
+                    } else {
+                        pathFor(intraCloses, plotW, 110)
+                            .stroke(m.signal.color, lineWidth: 1.6)
+                            .frame(width: plotW, height: 110)
+                        HStack {
+                            Text(hfmt(intraCloses.min(), 3))
+                                .font(.system(size: 10)).foregroundColor(HLDim2)
+                            Spacer()
+                            Text(String(intraCloses.count) + " 个5分钟点")
+                                .font(.system(size: 10)).foregroundColor(HLDim2)
+                            Spacer()
+                            Text(hfmt(intraCloses.max(), 3))
+                                .font(.system(size: 10)).foregroundColor(HLDim2)
+                        }
+                        .frame(width: plotW)
+                    }
+                }
+                .padding(13)
+                .background(RoundedRectangle(cornerRadius: 14).fill(HLCard))
+
+                // 均线
+                VStack(spacing: 6) {
+                    Text("均线 · 由历史K线实时计算")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundColor(HLDim)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     hrow("MA5", hfmt(m.ma(5), 4), HLText)
+                    hrow("MA10", hfmt(m.ma(10), 4), HLText)
                     hrow("MA20 · 短期生命线", hfmt(m.ma(20), 4), HLText)
                     hrow("MA60 · 中期生命线", hfmt(m.ma(60), 4), HLText)
+                    hrow("MA20 vs MA60", m.maGapText, m.maGapColor)
                 }
                 .padding(13)
                 .background(RoundedRectangle(cornerRadius: 14).fill(HLCard))
 
                 // 门槛
                 VStack(spacing: 6) {
+                    Text("关键价位 · 随行情动态重算")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundColor(HLDim)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     hrow("🟡 变黄需到", hfmt(m.nextYellow, 4), Color(red: 1.0, green: 0.69, blue: 0.13))
                     hrow("🟢 变绿需到", hfmt(m.nextGreen, 4), Color(red: 0.0, green: 0.84, blue: 0.56))
-                    hrow("🔴 止损参考", hfmt(m.stopLoss, 3), Color(red: 1.0, green: 0.30, blue: 0.37))
+                    hrow("🔴 止损参考（现价-2×ATR）", hfmt(m.stopLoss, 3), Color(red: 1.0, green: 0.30, blue: 0.37))
+                    hrow("距变黄还差", hfmt(m.gapToYellow, 4), HLDim)
                     hrow("近一年低", hfmt(m.periodLow, 3), HLDim)
                     hrow("近一年高", hfmt(m.periodHigh, 3), HLDim)
+                    hrow("年内分位", hfmt(m.percentile, 1) + "%", HLDim)
                 }
                 .padding(13)
                 .background(RoundedRectangle(cornerRadius: 14).fill(HLCard))
 
-                Text("本工具仅为纪律辅助，不构成投资建议。市场有风险，本金可能亏损。")
+                // 市场情绪
+                VStack(spacing: 6) {
+                    Text("市场情绪")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundColor(HLDim)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    hrow("换手率", m.quote == nil ? "—" : hfmt(m.quote!.turnover, 2) + "%", HLDim)
+                    hrow("量比", m.quote == nil ? "—" : hfmt(m.quote!.volRatio, 2), HLDim)
+                    hrow("振幅", m.quote == nil ? "—" : hfmt(m.quote!.amplitude, 2) + "%", HLDim)
+                    hrow("ATR(14)", hfmt(m.atr(), 4), HLDim)
+                    hrow("20日年化波动率", hfmt(m.annualVol, 1) + "%", HLDim)
+                }
+                .padding(13)
+                .background(RoundedRectangle(cornerRadius: 14).fill(HLCard))
+
+                Text("所有数据均为实时网络请求，无内嵌数据。数据来自第三方公开接口，可能延迟或失效。\n本工具仅为纪律辅助，不构成投资建议。")
                     .font(.system(size: 10))
                     .foregroundColor(HLDim2)
                     .padding(.top, 4)
@@ -736,6 +1161,72 @@ struct HLSignalView: View {
             .padding(10)
         }
         .background(Color(red: 0.043, green: 0.051, blue: 0.071))
+    }
+}
+
+struct HLSourceBar: View {
+    @EnvironmentObject var m: HLModel
+    @State var tick: Int = 0
+
+    let timer = Timer.publish(every: 30, on: .main, in: .common).autoconnect()
+
+    var staleMinutes: Int {
+        let sec = Date().timeIntervalSince(m.lastUpdate)
+        return Int(sec / 60)
+    }
+
+    var isStale: Bool { staleMinutes >= 5 }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Circle()
+                .fill(m.dataSource.isEmpty ? HLDim2 : (isStale ? Color(red: 1.0, green: 0.69, blue: 0.13) : Color(red: 0.0, green: 0.84, blue: 0.56)))
+                .frame(width: 7, height: 7)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(m.dataSource.isEmpty ? "未连接" : (m.dataSource + " · " + m.dataTime))
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(HLText)
+                Text(isStale ? ("数据已 " + String(staleMinutes) + " 分钟未更新") : "实时")
+                    .font(.system(size: 9.5))
+                    .foregroundColor(HLDim2)
+            }
+            Spacer()
+            Button {
+                m.loadAll()
+                m.refreshWatch()
+                m.loadBrief()
+            } label: {
+                Text("刷新")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(RoundedRectangle(cornerRadius: 8).fill(HLAccent))
+            }
+            .buttonStyle(PlainButtonStyle())
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(RoundedRectangle(cornerRadius: 12).fill(HLCard))
+        .onReceive(timer) { _ in
+            tick += 1
+            if HLSourceBar.isTradingTime() {
+                m.loadAll()
+            }
+        }
+    }
+
+    static func isTradingTime() -> Bool {
+        let cal = Calendar.current
+        let now = Date()
+        let wd = cal.component(.weekday, from: now)
+        let h = cal.component(.hour, from: now)
+        let mm = cal.component(.minute, from: now)
+        let t = h * 60 + mm
+        if wd < 2 || wd > 6 { return false }
+        if t >= 570 && t < 690 { return true }
+        if t >= 780 && t < 900 { return true }
+        return false
     }
 }
 
@@ -864,6 +1355,8 @@ struct HLBriefView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 10) {
+                HLSourceBar()
+
                 // 今日预案
                 VStack(spacing: 6) {
                     Text("今日预案")
@@ -947,7 +1440,7 @@ struct HLBriefView: View {
                 .padding(13)
                 .background(RoundedRectangle(cornerRadius: 14).fill(HLCard))
 
-                Text("数据来自公开接口，非官方授权，可能失效。\n本工具仅为纪律辅助，不构成投资建议。")
+                Text("外围、ADR、成分股均为实时网络请求（腾讯主源 / 新浪备源）。\n标注「—」表示该项当前未取到数据，不代表为零。\n数据来自公开接口，非官方授权，可能延迟或失效。\n本工具仅为纪律辅助，不构成投资建议。")
                     .font(.system(size: 10))
                     .foregroundColor(HLDim2)
             }
@@ -1096,6 +1589,26 @@ struct HLChartView: View {
                             HLLegend("黄灯 观望", Color(red: 1.0, green: 0.69, blue: 0.13))
                             HLLegend("绿灯 可操作", Color(red: 0.0, green: 0.84, blue: 0.56))
                         }
+                    }
+                }
+                .padding(13)
+                .background(RoundedRectangle(cornerRadius: 14).fill(HLCard))
+
+                // 分时
+                VStack(spacing: 8) {
+                    Text("分时 · 5分钟")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundColor(HLDim)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    if m.intraday.count < 2 {
+                        Text("非交易时段或暂无分时数据")
+                            .font(.system(size: 11))
+                            .foregroundColor(HLDim2)
+                            .frame(height: 110)
+                    } else {
+                        pathFor(m.intraday.map { $0.close }, plotW, 110)
+                            .stroke(HLAccent, lineWidth: 1.6)
+                            .frame(width: plotW, height: 110)
                     }
                 }
                 .padding(13)
