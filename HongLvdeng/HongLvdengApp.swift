@@ -9,7 +9,7 @@ struct HLCandle {
     let high: Double
     let low: Double
     let close: Double
-    let volume: Double = 0
+    var volume: Double = 0
 }
 
 struct HLQuote {
@@ -366,7 +366,7 @@ final class HLModel: ObservableObject {
 
     func loadTencent(_ codes: [String], done: @escaping ([String: HLQuote]) -> Void) {
         let list = codes.joined(separator: ",")
-        var comps = URLComponents(string: "https://qt.gtimg.cn/q=" + list)
+        let comps = URLComponents(string: "https://qt.gtimg.cn/q=" + list)
         if comps == nil {
             done([:])
             return
@@ -414,7 +414,7 @@ final class HLModel: ObservableObject {
                 if lo <= 0 { lo = price }
                 var vol = HLDouble(parts, 36)
                 if vol <= 0 { vol = HLDouble(parts, 6) }
-                var amtWan = HLDouble(parts, 37)
+                let amtWan = HLDouble(parts, 37)
                 var amt = amtWan * 10000
                 if amt <= 0 {
                     // 从组合字段 价/量/额 里取

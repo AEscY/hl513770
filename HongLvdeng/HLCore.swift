@@ -257,7 +257,6 @@ struct HLCore {
             i += k
         }
         if agg.count < 2 { return nil }
-        let m = mean(agg)
         let sd = stdev(agg)
         return sd * sqrt(252.0 / Double(k))
     }
