@@ -11,25 +11,29 @@ workflows:
           xcodebuild -version
           xcrun --sdk iphoneos --show-sdk-version
           swiftc --version 2>&1 | head -3
-      - name: 真实语法检查（swiftc -parse）
+      - name: 类型检查（swiftc -typecheck，能抓类型错误）
         script: |
           SDK=$(xcrun --sdk iphoneos --show-sdk-path)
           echo "SDK: $SDK"
-          echo "=== 对源码做真实语法/语义解析 ==="
-          xcrun swiftc -parse \
+          echo "=== 对源码做完整类型检查（含 SwiftUI 类型解析）==="
+          xcrun swiftc -typecheck \
             -target arm64-apple-ios15.0 \
             -sdk "$SDK" \
             -swift-version 5 \
             HongLvdeng/HLCore.swift HongLvdeng/HongLvdengApp.swift 2>&1 | tee SYNTAX.txt
-          echo "@@@@@@@@@@ 语法检查退出码: $? @@@@@@@@@@"
-          echo "@@@@@@@@@@ 语法错误行数: $(grep -c 'error:' SYNTAX.txt) @@@@@@@@@@"
+          echo "@@@@@@@@@@ 类型检查退出码: ${PIPESTATUS[0]} @@@@@@@@@@"
           if grep -q "error:" SYNTAX.txt; then
-            echo "!!! 源码存在语法错误，打印全部错误 !!!"
-            grep -n "error:" SYNTAX.txt
-            echo "!!! 停止后续步骤 !!!"
+            echo ""
+            echo "##################################################"
+            echo "####  类型错误如下（请复制给开发者）          ####"
+            echo "##################################################"
+            grep "error:" SYNTAX.txt
+            echo "##################################################"
+            echo "####  错误总数: $(grep -c 'error:' SYNTAX.txt)           ####"
+            echo "##################################################"
             exit 1
           fi
-          echo "✓ 源码语法检查通过"
+          echo "✓ 类型检查通过"
       - name: 动态验证：真实编译并运行算法检查
         script: |
           echo "═══════════════════════════════════════"
@@ -85,11 +89,16 @@ workflows:
           echo "@@@@@@@@@@ xcodebuild 退出码: $CODE @@@@@@@@@@"
           grep "error:" xcodebuild.log > ERRORS.txt || true
           echo "@@@@@@@@@@ error 行数: $(wc -l < ERRORS.txt | tr -d ' ') @@@@@@@@@@"
-          cat ERRORS.txt
-          echo "@@@@@@@@@@ 结束 @@@@@@@@@@"
+          echo "@@@@@@@@@@ error 行数: $(wc -l < ERRORS.txt | tr -d ' ') @@@@@@@@@@"
           if [ $CODE -ne 0 ]; then
-            echo "=== 编译失败，日志末尾 250 行 ==="
-            tail -250 xcodebuild.log
+            echo ""
+            echo "##################################################"
+            echo "####  编译错误如下（请复制这一段）            ####"
+            echo "##################################################"
+            cat ERRORS.txt
+            echo "##################################################"
+            echo "####  上面就是全部错误，共 $(wc -l < ERRORS.txt | tr -d ' ') 行  ####"
+            echo "##################################################"
             exit 1
           fi
           echo "✓ 编译成功"
