@@ -70,6 +70,51 @@ func HLTimeText(_ raw: String) -> String {
     return raw
 }
 
+// 数据源时间戳距今多久：解析 "09-24 16:14"
+func HLDataAgeSeconds(_ t: String) -> Double {
+    let parts = t.components(separatedBy: " ")
+    if parts.count < 2 { return -1 }
+    let dp = parts[0].components(separatedBy: "-")
+    if dp.count < 2 { return -1 }
+    let tp = parts[1].components(separatedBy: ":")
+    if tp.count < 2 { return -1 }
+    let mo = Int(dp[0]) ?? 0
+    let dy = Int(dp[1]) ?? 0
+    let hh = Int(tp[0]) ?? 0
+    let mm = Int(tp[1]) ?? 0
+    if mo <= 0 || dy <= 0 { return -1 }
+    let cal = Calendar.current
+    let now = Date()
+    let yc = cal.dateComponents([.year], from: now)
+    var target = DateComponents()
+    target.year = yc.year
+    target.month = mo
+    target.day = dy
+    target.hour = hh
+    target.minute = mm
+    if let d = cal.date(from: target) {
+        if d.timeIntervalSince(now) > 86400 {
+            target.year = (yc.year ?? 2026) - 1
+            if let d2 = cal.date(from: target) {
+                return now.timeIntervalSince(d2)
+            }
+        }
+        return now.timeIntervalSince(d)
+    }
+    return -1
+}
+
+// 友好文案
+func HLDataAgeText(_ t: String) -> String {
+    let s = HLDataAgeSeconds(t)
+    if s < 0 { return "时间未知" }
+    if s < 300 { return "实时" }
+    if s < 3600 { return "数据 " + String(Int(s / 60)) + " 分钟前" }
+    if s < 86400 { return "数据 " + String(Int(s / 3600)) + " 小时前" }
+    let d = Int(s / 86400)
+    return "数据源停在 " + String(d) + " 天前"
+}
+
 func HLDouble(_ parts: [String], _ i: Int) -> Double {
     if i >= parts.count { return 0 }
     return Double(parts[i]) ?? 0
@@ -2257,6 +2302,7 @@ struct HLSignalView: View {
 struct HLSourceBar: View {
     @EnvironmentObject var m: HLModel
     @State var tick: Int = 0
+    @State var justRefreshed: Bool = false
 
     let timer = Timer.publish(every: 30, on: .main, in: .common).autoconnect()
 
@@ -2265,33 +2311,44 @@ struct HLSourceBar: View {
         return Int(sec / 60)
     }
 
-    var isStale: Bool { staleMinutes >= 5 }
+    // 新鲜度按「数据源自己的时间戳」判断，而不是上次请求时间
+    var ageSec: Double { HLDataAgeSeconds(m.dataTime) }
+    var isFresh: Bool { ageSec >= 0 && ageSec < 300 }
+    var ageText: String {
+        if m.dataTime.isEmpty { return "未连接" }
+        return HLDataAgeText(m.dataTime)
+    }
 
     var body: some View {
         HStack(spacing: 8) {
             Circle()
-                .fill(m.dataSource.isEmpty ? HLDim2 : (isStale ? Color(red: 1.0, green: 0.69, blue: 0.13) : Color(red: 0.0, green: 0.84, blue: 0.56)))
+                .fill(m.dataSource.isEmpty ? HLDim2 : (isFresh ? Color(red: 0.0, green: 0.84, blue: 0.56) : Color(red: 1.0, green: 0.69, blue: 0.13)))
                 .frame(width: 7, height: 7)
             VStack(alignment: .leading, spacing: 1) {
                 Text(m.dataSource.isEmpty ? "未连接" : (m.dataSource + " · " + m.dataTime))
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundColor(HLText)
-                Text(isStale ? ("数据已 " + String(staleMinutes) + " 分钟未更新") : "实时")
+                Text(ageText)
                     .font(.system(size: 9.5))
-                    .foregroundColor(HLDim2)
+                    .foregroundColor(isFresh ? HLDim2 : Color(red: 1.0, green: 0.69, blue: 0.13))
+                    .id(tick)
             }
             Spacer()
             Button {
                 m.loadAll()
                 m.refreshWatch()
                 m.loadBrief()
+                justRefreshed = true
+                DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+                    justRefreshed = false
+                }
             } label: {
-                Text("刷新")
+                Text(justRefreshed ? "已请求" : "刷新")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundColor(.white)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 6)
-                    .background(RoundedRectangle(cornerRadius: 8).fill(HLAccent))
+                    .background(RoundedRectangle(cornerRadius: 8).fill(justRefreshed ? Color(red: 0.0, green: 0.84, blue: 0.56) : HLAccent))
             }
             .buttonStyle(PlainButtonStyle())
         }
