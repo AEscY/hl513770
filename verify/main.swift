@@ -177,6 +177,30 @@ if real.count < 100 {
     check("相似形态 样本=15", Int(sim[0]) == 15, "样本 \(Int(sim[0]))")
     // 不变量 11：上涨概率 ∈ [0,100]
     check("上涨概率 ∈ [0,100]", sim[2] >= 0 && sim[2] <= 100, "\(String(format: "%.0f", sim[2]))%")
+    // 不变量 12：异常扫描返回 7 项，level 全部合法
+    // 构造 ohlcv
+    var oo: [Double] = []
+    var hh: [Double] = []
+    var ll: [Double] = []
+    var vv: [Double] = []
+    var t = 0
+    while t < real.count {
+        oo.append(real[t]); hh.append(real[t]); ll.append(real[t]); vv.append(1.0)
+        t += 1
+    }
+    let items = HLCore.anomalyScan(real, hh, ll, oo, vv)
+    check("异常扫描 返回7项", items.count == 7, "实际 \(items.count)")
+    var lvlOK = true
+    var t2 = 0
+    while t2 < items.count {
+        if items[t2].level < 0 || items[t2].level > 2 { lvlOK = false }
+        t2 += 1
+    }
+    check("异常项 level ∈ [0,2]", lvlOK)
+    let agg = HLCore.anomalyLevel(items)
+    check("异常聚合 count≤7 且 score≥0", agg.count <= 7 && agg.score >= 0,
+          "level=\(agg.level) score=\(agg.score) count=\(agg.count)")
+
     // 不变量 12：信号质量三类样本之和 > 0
     let rq = HLCore.signalQuality(real, 0)
     let yq = HLCore.signalQuality(real, 1)
@@ -200,6 +224,16 @@ if real.count < 100 {
     if let h = HLCore.hurst(real) { print("  赫斯特 H    \(String(format: "%.3f", h))") }
     print("  相似形态    样本\(Int(sim[0])) 后20日均\(String(format: "%.2f", sim[1]))% 上涨率\(String(format: "%.0f", sim[2]))%")
     print("  信号审计    红\(Int(rq[0]))次均\(String(format: "%.2f", rq[1]))% | 黄\(Int(yq[0]))次均\(String(format: "%.2f", yq[1]))% | 绿\(Int(gq[0]))次均\(String(format: "%.2f", gq[1]))%")
+    print("")
+    print("  ─── 市场异常扫描 ───")
+    var ai = 0
+    while ai < items.count {
+        let mark = items[ai].level >= 2 ? "⚠" : (items[ai].level == 1 ? "·" : " ")
+        print("  \(mark) \(items[ai].name.padding(toLength: 12, withPad: " ", startingAt: 0)) \(items[ai].value)")
+        ai += 1
+    }
+    print("  综合: \(HLCore.anomalyTitle(agg.level)) (score \(agg.score), 触发 \(agg.count) 项)")
+
     var bk = 0
     while bk <= 6 {
         let b = HLCore.backtest(real, bk)

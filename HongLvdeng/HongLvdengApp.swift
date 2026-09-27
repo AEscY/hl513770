@@ -9,6 +9,7 @@ struct HLCandle {
     let high: Double
     let low: Double
     let close: Double
+    let volume: Double = 0
 }
 
 struct HLQuote {
@@ -216,6 +217,17 @@ final class HLModel: ObservableObject {
     var closes: [Double] { candles.map { $0.close } }
     var highs: [Double] { candles.map { $0.high } }
     var lows: [Double] { candles.map { $0.low } }
+    var opens: [Double] { candles.map { $0.open } }
+    var volumes: [Double] { candles.map { $0.volume } }
+
+    // 市场异常扫描（纯算法在 HLCore，可被云端验证）
+    var anomalies: [HLAnomalyItem] {
+        if candles.count < 70 { return [] }
+        return HLCore.anomalyScan(closes, highs, lows, opens, volumes)
+    }
+    var anomalyAgg: (level: Int, score: Int, count: Int) {
+        return HLCore.anomalyLevel(anomalies)
+    }
     var lastPrice: Double { quote?.price ?? (closes.last ?? 0) }
 
     func ma(_ k: Int) -> Double? {
@@ -593,9 +605,10 @@ final class HLModel: ObservableObject {
                     let h = HLModel.num(item["high"])
                     let l = HLModel.num(item["low"])
                     let c = HLModel.num(item["close"])
+                    let vol = HLModel.num(item["volume"])
                     if c > 0 {
                         let short = day.count >= 10 ? String(day.suffix(5)) : day
-                        out.append(HLCandle(date: short, open: o, high: h, low: l, close: c))
+                        out.append(HLCandle(date: short, open: o, high: h, low: l, close: c, volume: vol))
                     }
                 }
             }
@@ -634,9 +647,10 @@ final class HLModel: ObservableObject {
                             let c = HLModel.num(item[2])
                             let h = HLModel.num(item[3])
                             let l = HLModel.num(item[4])
+                            let vol = item.count > 5 ? HLModel.num(item[5]) : 0
                             if c > 0 {
                                 let short = dt.count >= 10 ? String(dt.suffix(5)) : dt
-                                out.append(HLCandle(date: short, open: o, high: h, low: l, close: c))
+                                out.append(HLCandle(date: short, open: o, high: h, low: l, close: c, volume: vol))
                             }
                         }
                     }
@@ -2500,6 +2514,89 @@ struct HLWatchView: View {
 
 // MARK: - 简报页
 
+struct HLAnomalyCard: View {
+    @EnvironmentObject var m: HLModel
+
+    var agg: (level: Int, score: Int, count: Int) { m.anomalyAgg }
+    var items: [HLAnomalyItem] { m.anomalies }
+
+    var title: String { HLCore.anomalyTitle(agg.level) }
+    var advice: String { HLCore.anomalyAdvice(items) }
+
+    var levelColor: Color {
+        if agg.level >= 2 { return Color(red: 1.0, green: 0.30, blue: 0.37) }
+        if agg.level == 1 { return Color(red: 1.0, green: 0.69, blue: 0.13) }
+        return Color(red: 0.0, green: 0.84, blue: 0.56)
+    }
+
+    var body: some View {
+        VStack(spacing: 8) {
+            HStack {
+                Text("异动雷达")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundColor(HLDim)
+                Spacer()
+                Text(title)
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 3)
+                    .background(RoundedRectangle(cornerRadius: 6).fill(levelColor))
+            }
+
+            if items.isEmpty {
+                Text("历史数据不足，无法扫描")
+                    .font(.system(size: 11))
+                    .foregroundColor(HLDim2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                ForEach(0..<items.count, id: \.self) { i in
+                    anomalyRow(items[i])
+                }
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("应对")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundColor(levelColor)
+                    Text(advice)
+                        .font(.system(size: 10.5))
+                        .foregroundColor(HLText)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(9)
+                .background(RoundedRectangle(cornerRadius: 9).fill(levelColor.opacity(0.12)))
+
+                Text("异动检测只识别「已经发生的不寻常」，不预测涨跌。历史回测：近60日约5%的交易日会触发。")
+                    .font(.system(size: 9.5))
+                    .foregroundColor(HLDim2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(13)
+        .background(RoundedRectangle(cornerRadius: 14).fill(HLCard))
+    }
+
+    func anomalyRow(_ it: HLAnomalyItem) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            Circle()
+                .fill(it.level >= 2 ? Color(red: 1.0, green: 0.30, blue: 0.37)
+                      : (it.level == 1 ? Color(red: 1.0, green: 0.69, blue: 0.13)
+                         : Color(red: 0.0, green: 0.84, blue: 0.56)))
+                .frame(width: 6, height: 6)
+                .padding(.top, 5)
+            Text(it.name)
+                .font(.system(size: 11))
+                .foregroundColor(HLDim)
+                .frame(width: 68, alignment: .leading)
+            Text(it.value)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(it.level >= 1 ? HLText : HLDim2)
+            Spacer()
+        }
+    }
+}
+
 struct HLBriefView: View {
     @EnvironmentObject var m: HLModel
 
@@ -2507,6 +2604,9 @@ struct HLBriefView: View {
         ScrollView {
             VStack(spacing: 10) {
                 HLSourceBar()
+
+                // 异动雷达
+                HLAnomalyCard()
 
                 // 今日预案
                 VStack(spacing: 6) {

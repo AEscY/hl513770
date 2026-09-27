@@ -3,6 +3,15 @@ import Foundation
 // MARK: - 纯算法核心（不依赖 SwiftUI / UIKit，可在命令行独立编译运行）
 // 主 App 与云端验证程序共用这一份实现，保证"验证的就是跑的"
 
+// MARK: - 异常检测项
+// level: 0 正常 / 1 注意 / 2 异动
+struct HLAnomalyItem {
+    var name: String = ""
+    var value: String = ""
+    var level: Int = 0
+    var hint: String = ""
+}
+
 struct HLCore {
 
     // ---------- 均线 ----------
@@ -588,5 +597,177 @@ struct HLCore {
         if p < m20! { return 0 }
         if p < m60! { return 1 }
         return 2
+    }
+
+    // ---------- 市场异常扫描 ----------
+    // 返回全部检测项（含正常项），调用方按 level 过滤
+    static func anomalyScan(_ c: [Double], _ h: [Double], _ l: [Double],
+                            _ o: [Double], _ v: [Double]) -> [HLAnomalyItem] {
+        var out: [HLAnomalyItem] = []
+        if c.count < 70 { return out }
+        let n = c.count - 1
+        let today = c[n] / c[n - 1] - 1
+
+        // 近60日收益率
+        var r60: [Double] = []
+        var i = n - 59
+        if i < 1 { i = 1 }
+        while i <= n { r60.append(c[i] / c[i - 1] - 1); i += 1 }
+        let sd60 = stdev(r60)
+
+        // 1 价格 Z-Score
+        var it = HLAnomalyItem()
+        it.name = "价格波动"
+        let z = sd60 > 0 ? (today - mean(r60)) / sd60 : 0
+        it.value = String(format: "%+.2f%% (Z %+.2f)", today * 100, z)
+        if abs(z) >= 2.5 { it.level = 2; it.hint = "偏离日常波动 2.5 倍标准差，属罕见波动" }
+        else if abs(z) >= 2 { it.level = 1; it.hint = "偏离日常波动 2 倍标准差" }
+        else { it.level = 0; it.hint = "在正常波动范围内" }
+        out.append(it)
+
+        // 2 量比
+        it = HLAnomalyItem()
+        it.name = "成交量"
+        var vbase: [Double] = []
+        var j = n - 20
+        if j < 0 { j = 0 }
+        while j < n { vbase.append(v[j]); j += 1 }
+        let vr = vbase.count > 0 && mean(vbase) > 0 ? v[n] / mean(vbase) : 1
+        it.value = String(format: "量比 %.2f", vr)
+        if vr >= 2.5 { it.level = 2; it.hint = "天量（2.5倍以上），有大资金集中动作" }
+        else if vr >= 2 { it.level = 1; it.hint = "显著放量" }
+        else if vr <= 0.4 { it.level = 1; it.hint = "极度缩量，几乎无人交易" }
+        else { it.level = 0; it.hint = "成交正常" }
+        out.append(it)
+
+        // 3 振幅 / ATR
+        it = HLAnomalyItem()
+        it.name = "日内振幅"
+        var atrs: [Double] = []
+        var k = n - 13
+        if k < 1 { k = 1 }
+        while k <= n {
+            let tr = max(h[k] - l[k], max(abs(h[k] - c[k - 1]), abs(l[k] - c[k - 1])))
+            atrs.append(tr)
+            k += 1
+        }
+        let atr = mean(atrs)
+        let amp = (h[n] - l[n]) / c[n - 1]
+        let ampr = atr > 0 ? amp / (atr / c[n - 1]) : 0
+        it.value = String(format: "%.2f%% (%.2f倍ATR)", amp * 100, ampr)
+        if ampr >= 2.5 { it.level = 2; it.hint = "振幅达 ATR 2.5 倍，盘中激烈争夺" }
+        else if ampr >= 2 { it.level = 1; it.hint = "振幅偏大" }
+        else { it.level = 0; it.hint = "振幅正常" }
+        out.append(it)
+
+        // 4 跳空
+        it = HLAnomalyItem()
+        it.name = "跳空缺口"
+        let gap = (o[n] - c[n - 1]) / c[n - 1]
+        it.value = String(format: "%+.2f%%", gap * 100)
+        if abs(gap) >= 0.03 { it.level = 2; it.hint = "大幅跳空（3%以上），隔夜有重大消息" }
+        else if abs(gap) >= 0.015 { it.level = 1; it.hint = "明显跳空" }
+        else { it.level = 0; it.hint = "开盘平稳" }
+        out.append(it)
+
+        // 5 连续单边
+        it = HLAnomalyItem()
+        it.name = "连续走势"
+        var streak = 0
+        var m = n
+        while m >= 1 {
+            let r = c[m] / c[m - 1] - 1
+            if (r > 0) == (today > 0) { streak += 1; m -= 1 }
+            else { break }
+        }
+        it.value = String(format: "%d 天%@", streak, today > 0 ? "上涨" : "下跌")
+        if streak >= 7 { it.level = 2; it.hint = "连续 7 天以上单边，反转概率上升" }
+        else if streak >= 5 { it.level = 1; it.hint = "连续 5 天单边" }
+        else { it.level = 0; it.hint = "无极端连边" }
+        out.append(it)
+
+        // 6 波动率突变
+        it = HLAnomalyItem()
+        it.name = "波动率突变"
+        var r5: [Double] = []
+        var q = n - 4
+        if q < 1 { q = 1 }
+        while q <= n { r5.append(c[q] / c[q - 1] - 1); q += 1 }
+        let vj = stdev(r60) > 0 ? stdev(r5) / stdev(r60) : 1
+        it.value = String(format: "%.2f 倍", vj)
+        if vj >= 2.5 { it.level = 2; it.hint = "短期波动达常态 2.5 倍，风险显著上升" }
+        else if vj >= 2 { it.level = 1; it.hint = "波动放大" }
+        else { it.level = 0; it.hint = "波动平稳" }
+        out.append(it)
+
+        // 7 量价背离（最有价值的一类）
+        it = HLAnomalyItem()
+        it.name = "量价背离"
+        var tag = "无背离"
+        var lvl = 0
+        if vr >= 2 {
+            if today >= 0.03 { tag = "放量暴涨"; lvl = 2
+                it.hint = "放量上攻，可能是趋势启动或情绪高点" }
+            else if today > 0 && today < 0.01 { tag = "放量滞涨"; lvl = 2
+                it.hint = "量大但价格不动，常见出货信号" }
+            else if today < 0 { tag = "放量下跌"; lvl = 2
+                it.hint = "放量下杀，抛压真实，勿接飞刀" }
+        } else if vr <= 0.5 && today < 0 {
+            tag = "缩量阴跌"; lvl = 1
+            it.hint = "无人接盘式下跌，通常还没跌完"
+        }
+        if lvl == 0 { it.hint = "量价配合正常" }
+        it.value = tag
+        it.level = lvl
+        out.append(it)
+
+        return out
+    }
+
+    // 综合预警等级
+    static func anomalyLevel(_ items: [HLAnomalyItem]) -> (level: Int, score: Int, count: Int) {
+        var score = 0
+        var count = 0
+        var i = 0
+        while i < items.count {
+            if items[i].level >= 1 {
+                count += 1
+                score += items[i].level
+            }
+            i += 1
+        }
+        // 有任意 level2 → 异动；无 level2 但累计≥3 → 注意；否则平静
+        var has2 = false
+        var t = 0
+        while t < items.count {
+            if items[t].level >= 2 { has2 = true }
+            t += 1
+        }
+        var lv = 0
+        if has2 { lv = 2 }
+        else if score >= 3 { lv = 1 }
+        return (lv, score, count)
+    }
+
+    static func anomalyTitle(_ level: Int) -> String {
+        if level >= 2 { return "异动" }
+        if level == 1 { return "注意" }
+        return "平静"
+    }
+
+    // 综合应对建议：取最严重那一项的提示
+    static func anomalyAdvice(_ items: [HLAnomalyItem]) -> String {
+        var worst = -1
+        var pick = ""
+        var i = 0
+        while i < items.count {
+            if items[i].level > worst {
+                worst = items[i].level
+                pick = items[i].hint
+            }
+            i += 1
+        }
+        if worst <= 0 { return "各项指标正常，无异动。按既定纪律执行即可。" }
+        return pick
     }
 }
