@@ -20,7 +20,7 @@ workflows:
             -target arm64-apple-ios15.0 \
             -sdk "$SDK" \
             -swift-version 5 \
-            HongLvdeng/HongLvdengApp.swift 2>&1 | tee SYNTAX.txt
+            HongLvdeng/HLCore.swift HongLvdeng/HongLvdengApp.swift 2>&1 | tee SYNTAX.txt
           echo "@@@@@@@@@@ 语法检查退出码: $? @@@@@@@@@@"
           echo "@@@@@@@@@@ 语法错误行数: $(grep -c 'error:' SYNTAX.txt) @@@@@@@@@@"
           if grep -q "error:" SYNTAX.txt; then
@@ -30,6 +30,34 @@ workflows:
             exit 1
           fi
           echo "✓ 源码语法检查通过"
+      - name: 动态验证：真实编译并运行算法检查
+        script: |
+          echo "═══════════════════════════════════════"
+          echo " 这一步在真实的 macOS 机器上编译并运行算法"
+          echo " 不是静态检查，是真正跑一遍看结果对不对"
+          echo "═══════════════════════════════════════"
+          xcrun swiftc -O \
+            HongLvdeng/HLCore.swift verify/main.swift \
+            -o hlverify 2>&1 | tee VERIFY_BUILD.txt
+          VB=$?
+          echo "@@@@@@@@@@ 验证程序编译退出码: $VB @@@@@@@@@@"
+          if [ $VB -ne 0 ] || [ ! -f ./hlverify ]; then
+            echo "!!! 验证程序编译失败，打印错误 !!!"
+            cat VERIFY_BUILD.txt
+            exit 1
+          fi
+          echo "✓ 验证程序编译成功，开始运行"
+          echo ""
+          ./hlverify 2>&1 | tee VERIFY_RUN.txt
+          VR=$?
+          echo ""
+          echo "@@@@@@@@@@ 算法验证退出码: $VR @@@@@@@@@@"
+          if [ $VR -ne 0 ]; then
+            echo "!!! 算法验证未通过，停止构建 !!!"
+            grep "❌" VERIFY_RUN.txt || true
+            exit 1
+          fi
+          echo "✓ 算法验证全部通过，继续编译 App"
       - name: 安装 xcodegen 并生成工程
         script: |
           brew install xcodegen || brew upgrade xcodegen || true
@@ -106,6 +134,7 @@ workflows:
           echo "=== IPA 内二进制确认 ==="
           unzip -l HongLvdeng.ipa | grep -E "HongLvdeng$|\.app/HongLvdeng$" || unzip -l HongLvdeng.ipa | tail -20
     artifacts:
+      - VERIFY_RUN.txt
       - HongLvdeng.ipa
       - SYNTAX.txt
       - ERRORS.txt

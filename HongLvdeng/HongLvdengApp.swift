@@ -174,15 +174,7 @@ final class HLModel: ObservableObject {
     var lastPrice: Double { quote?.price ?? (closes.last ?? 0) }
 
     func ma(_ k: Int) -> Double? {
-        let a = closes
-        if a.count < k || k <= 0 { return nil }
-        var s = 0.0
-        var i = a.count - k
-        while i < a.count {
-            s += a[i]
-            i += 1
-        }
-        return s / Double(k)
+        return HLCore.ma(closes, k)
     }
 
     func atr() -> Double? {
@@ -748,31 +740,7 @@ final class HLModel: ObservableObject {
     // MARK: - 技术指标
 
     func rsi(_ k: Int) -> Double? {
-        let a = closes
-        if a.count <= k { return nil }
-        var gain = 0.0
-        var loss = 0.0
-        var i = 1
-        while i <= k {
-            let ch = a[i] - a[i - 1]
-            if ch > 0 { gain += ch } else { loss -= ch }
-            i += 1
-        }
-        var ag = gain / Double(k)
-        var al = loss / Double(k)
-        if a.count > k + 1 {
-            var j = k + 1
-            while j < a.count {
-                let ch = a[j] - a[j - 1]
-                let g = ch > 0 ? ch : 0.0
-                let l = ch < 0 ? -ch : 0.0
-                ag = (ag * Double(k - 1) + g) / Double(k)
-                al = (al * Double(k - 1) + l) / Double(k)
-                j += 1
-            }
-        }
-        if al <= 0 { return 100 }
-        return 100 - 100 / (1 + ag / al)
+        return HLCore.rsi(closes, k)
     }
 
     var bollMid: Double? { ma(20) }
@@ -896,14 +864,7 @@ final class HLModel: ObservableObject {
     }
 
     func maAt(_ a: [Double], _ k: Int, _ idx: Int) -> Double? {
-        if idx + 1 < k { return nil }
-        var s = 0.0
-        var i = idx - k + 1
-        while i <= idx {
-            s += a[i]
-            i += 1
-        }
-        return s / Double(k)
+        return HLCore.maAt(a, k, idx)
     }
 
     var btDDHold: Double { maxDD(series: holdCurve) }
@@ -1295,6 +1256,791 @@ final class HLModel: ObservableObject {
         if v >= 45 { return Color(red: 1.0, green: 0.69, blue: 0.13) }
         return Color(red: 1.0, green: 0.30, blue: 0.37)
     }
+
+    // MARK: - 智能策略引擎：多策略回测 / 历史相似 / 蒙特卡洛 / 投票 / 凯利
+
+    // ---- 通用指标（按索引，供回测使用）----
+
+    func rsiAt(_ a: [Double], _ k: Int, _ idx: Int) -> Double? {
+        return HLCore.rsiAt(a, k, idx)
+    }
+
+    func bollUpAt(_ a: [Double], _ k: Int, _ idx: Int) -> Double? {
+        return HLCore.bollUpAt(a, k, idx)
+    }
+
+    func bollLowAt(_ a: [Double], _ k: Int, _ idx: Int) -> Double? {
+        return HLCore.bollLowAt(a, k, idx)
+    }
+
+    // ---- 多策略回测 ----
+
+    func strategyName(_ k: Int) -> String {
+        if k == 0 { return "一直持有" }
+        if k == 1 { return "红绿灯" }
+        if k == 2 { return "双均线 MA5/20" }
+        if k == 3 { return "RSI 超卖反弹" }
+        if k == 4 { return "布林带回归" }
+        if k == 5 { return "网格 每5%" }
+        if k == 6 { return "定投 每20日" }
+        return "—"
+    }
+
+    // 返回 [收益率倍数, 最大回撤%, 交易次数, 胜率%]
+    func backtest(_ kind: Int) -> [Double] {
+        return HLCore.backtest(closes, kind)
+    }
+
+    var btRows: [[Double]] {
+        var out: [[Double]] = []
+        var k = 0
+        while k <= 6 {
+            out.append(backtest(k))
+            k += 1
+        }
+        return out
+    }
+
+    var bestStrategyIndex: Int {
+        let rows = btRows
+        var best = 0
+        var bv = -999.0
+        var i = 0
+        while i < rows.count {
+            let score = (rows[i][0] - 1) * 100 - rows[i][1] * 0.5
+            if score > bv { bv = score; best = i }
+            i += 1
+        }
+        return best
+    }
+
+    var bestStrategyName: String { strategyName(bestStrategyIndex) }
+
+    // ---- 历史相似形态 ----
+
+    func featureAt(_ idx: Int) -> [Double] {
+        return HLCore.featureAt(closes, idx)
+    }
+
+    // 返回：样本数 / 平均20日涨幅% / 上涨概率% / 最好% / 最差%
+    var similarStats: [Double] {
+        let c = closes
+        if c.count < 120 { return [0, 0, 0, 0, 0] }
+        let cur = featureAt(c.count - 1)
+        var dists: [[Double]] = []
+        let horizon = 20
+        var i = 80
+        while i <= c.count - 1 - horizon {
+            let f = featureAt(i)
+            let d0 = f[0] - cur[0]
+            let d1 = f[1] - cur[1]
+            let d2 = (f[2] - cur[2]) * 0.3
+            let d3 = (f[3] - cur[3]) * 0.3
+            let d = sqrt(d0 * d0 + d1 * d1 + d2 * d2 + d3 * d3)
+            let fut = (c[i + horizon] / c[i] - 1) * 100
+            dists.append([d, fut])
+            i += 5
+        }
+        if dists.isEmpty { return [0, 0, 0, 0, 0] }
+        // 按距离排序（简单选择排序，取前 15）
+        var sorted: [[Double]] = []
+        var pool = dists
+        while sorted.count < 15 && pool.isEmpty == false {
+            var bi = 0
+            var j = 1
+            while j < pool.count {
+                if pool[j][0] < pool[bi][0] { bi = j }
+                j += 1
+            }
+            sorted.append(pool[bi])
+            pool.remove(at: bi)
+        }
+        var sum = 0.0
+        var up = 0
+        var best = -999.0
+        var worst = 999.0
+        var winSum = 0.0
+        var lossSum = 0.0
+        var k = 0
+        while k < sorted.count {
+            let r = sorted[k][1]
+            sum += r
+            if r > 0 {
+                up += 1
+                winSum += r
+            } else {
+                lossSum += (-r)
+            }
+            if r > best { best = r }
+            if r < worst { worst = r }
+            k += 1
+        }
+        let n = Double(sorted.count)
+        var avgWin = 0.0
+        var avgLoss = 0.0
+        if up > 0 { avgWin = winSum / Double(up) }
+        if up < sorted.count { avgLoss = lossSum / Double(sorted.count - up) }
+        // [样本数, 平均涨幅, 上涨概率, 最好, 最差, 上涨时平均涨, 下跌时平均跌]
+        return [n, sum / n, Double(up) / n * 100, best, worst, avgWin, avgLoss]
+    }
+
+    var similarCount: Int { Int(similarStats[0]) }
+    var similarAvgRet: Double { similarStats[1] }
+    var similarWinRate: Double { similarStats[2] }
+    var similarBest: Double { similarStats[3] }
+    var similarWorst: Double { similarStats[4] }
+    var similarAvgWin: Double { similarStats[5] }
+    var similarAvgLoss: Double { similarStats[6] }
+
+    var similarText: String {
+        if similarCount == 0 { return "样本不足" }
+        let a = similarAvgRet
+        if a > 3 { return "历史相似形态后 20 日偏强" }
+        if a < -3 { return "历史相似形态后 20 日偏弱" }
+        return "历史相似形态后 20 日无明显倾向"
+    }
+
+    var similarColor: Color {
+        if similarCount == 0 { return HLDim }
+        if similarAvgRet > 0 { return Color(red: 0.0, green: 0.84, blue: 0.56) }
+        return Color(red: 1.0, green: 0.30, blue: 0.37)
+    }
+
+    // ---- 蒙特卡洛情景推演 ----
+
+    func gaussRandom() -> Double {
+        var u = 0.0
+        var v = 0.0
+        var g = 0.0
+        u = Double.random(in: 0.000001...0.999999)
+        v = Double.random(in: 0.0...1.0)
+        g = sqrt(-2.0 * log(u)) * cos(2.0 * Double.pi * v)
+        return g
+    }
+
+    // 返回未来第 N 日的价格分位 [5%, 25%, 50%, 75%, 95%]
+    func monteCarlo(_ days: Int) -> [Double] {
+        let c = closes
+        if c.count < 30 { return [0, 0, 0, 0, 0] }
+        var rets: [Double] = []
+        var i = c.count - 60
+        if i < 1 { i = 1 }
+        while i < c.count {
+            rets.append(c[i] / c[i - 1] - 1)
+            i += 1
+        }
+        if rets.isEmpty { return [0, 0, 0, 0, 0] }
+        var sum = 0.0
+        var k = 0
+        while k < rets.count { sum += rets[k]; k += 1 }
+        let mu = sum / Double(rets.count)
+        var vs = 0.0
+        k = 0
+        while k < rets.count {
+            let d = rets[k] - mu
+            vs += d * d
+            k += 1
+        }
+        let sd = sqrt(vs / Double(rets.count))
+        let p0 = lastPrice
+        if p0 <= 0 { return [0, 0, 0, 0, 0] }
+
+        var finals: [Double] = []
+        var sim = 0
+        while sim < 800 {
+            var p = p0
+            var d = 0
+            while d < days {
+                let r = mu + sd * gaussRandom()
+                p = p * (1 + r)
+                if p < 0 { p = 0 }
+                d += 1
+            }
+            finals.append(p)
+            sim += 1
+        }
+        finals.sort()
+        let n = finals.count
+        func q(_ f: Double) -> Double {
+            var idx = Int(f * Double(n - 1))
+            if idx < 0 { idx = 0 }
+            if idx >= n { idx = n - 1 }
+            return finals[idx]
+        }
+        return [q(0.05), q(0.25), q(0.50), q(0.75), q(0.95)]
+    }
+
+    var mc20: [Double] { monteCarlo(20) }
+    var mc60: [Double] { monteCarlo(60) }
+
+    var mc20Text: String {
+        let m = mc20
+        if m[2] <= 0 { return "—" }
+        return hfmt(m[1], 3) + " ~ " + hfmt(m[3], 3) + "（中位 " + hfmt(m[2], 3) + "）"
+    }
+
+    var mcUpProb: Double {
+        let m = mc20
+        if m[2] <= 0 { return 0 }
+        return 50.0
+    }
+
+    // ---- 多指标投票 ----
+
+    // 返回 [多头票数, 空头票数, 总分(-8~8)]
+    var voteResult: [Double] {
+        var bull = 0
+        var bear = 0
+
+        if let m20 = ma(20), m20 > 0 {
+            if lastPrice > m20 { bull += 1 } else { bear += 1 }
+        }
+        if let m60 = ma(60), m60 > 0 {
+            if lastPrice > m60 { bull += 1 } else { bear += 1 }
+        }
+        if let a = ma(20), let b = ma(60) {
+            if a > b { bull += 1 } else { bear += 1 }
+        }
+        if let d = macdDIF, let e = macdDEA {
+            if d > e { bull += 1 } else { bear += 1 }
+        }
+        if let kd = kdj {
+            if kd.k > kd.d { bull += 1 } else { bear += 1 }
+        }
+        if let r = rsi(14) {
+            if r < 35 { bull += 1 }
+            else if r > 65 { bear += 1 }
+        }
+        if let w = williamsR {
+            if w < -75 { bull += 1 }
+            else if w > -25 { bear += 1 }
+        }
+        if let p = bollPosition {
+            if p < 0.25 { bull += 1 }
+            else if p > 0.75 { bear += 1 }
+        }
+        return [Double(bull), Double(bear), Double(bull - bear)]
+    }
+
+    var voteBull: Int { Int(voteResult[0]) }
+    var voteBear: Int { Int(voteResult[1]) }
+    var voteScore: Int { Int(voteResult[2]) }
+
+    var voteText: String {
+        let v = voteScore
+        if v >= 4 { return "多头共振" }
+        if v >= 2 { return "偏多" }
+        if v <= -4 { return "空头共振" }
+        if v <= -2 { return "偏空" }
+        return "多空分歧"
+    }
+
+    var voteColor: Color {
+        let v = voteScore
+        if v >= 2 { return Color(red: 0.0, green: 0.84, blue: 0.56) }
+        if v <= -2 { return Color(red: 1.0, green: 0.30, blue: 0.37) }
+        return Color(red: 1.0, green: 0.69, blue: 0.13)
+    }
+
+    // ---- 凯利公式仓位 ----
+
+    // 用历史相似形态的胜率 + 平均盈亏比
+    var kellyRaw: Double {
+        if similarCount < 5 { return 0 }
+        let wr = similarWinRate / 100.0
+        let avgWin = similarAvgWin
+        let avgLoss = similarAvgLoss
+        if avgLoss <= 0 || avgWin <= 0 { return 0 }
+        let b = avgWin / avgLoss
+        let k = (wr * b - (1 - wr)) / b
+        if k < 0 { return 0 }
+        if k > 1 { return 1 }
+        return k
+    }
+
+    // 凯利为 0 时的解释文字
+    var kellyReason: String {
+        if similarCount < 5 { return "样本不足，无法估算" }
+        if kellyRaw <= 0 {
+            return "按历史相似形态估算，期望为负 —— 此时不加仓才是正解"
+        }
+        return "胜率 " + hfmt(similarWinRate, 0) + "% · 盈亏比 " + hfmt(similarAvgWin / max(similarAvgLoss, 0.01), 2)
+    }
+
+    // 分数凯利（1/4），实战更稳
+    var kellySafe: Double { kellyRaw * 0.25 }
+
+    var kellyText: String {
+        if similarCount < 5 { return "样本不足，不建议据此加仓" }
+        let pct = kellySafe * 100
+        if pct < 5 { return "建议仓位 <5%（几乎不值得下手）" }
+        return "建议仓位约 " + hfmt(pct, 0) + "%（分数凯利 1/4）"
+    }
+
+    var adviceText: String {
+        let sig = signal
+        let v = voteScore
+        if sig == .red {
+            if v <= -4 { return "灯红 + 指标共振看空：守住不动，不接下跌的刀" }
+            if v >= 2 { return "灯红但指标偏多：别急着加，等灯真正转黄再说" }
+            return "灯红：规则优先，不加仓"
+        }
+        if sig == .yellow {
+            if v >= 4 { return "灯黄 + 指标共振：可小仓试探，设好止损" }
+            return "灯黄：观望为主，仓位不超过三成"
+        }
+        if sig == .green {
+            if v >= 4 { return "灯绿 + 指标共振：可按计划分批执行" }
+            if v <= -2 { return "灯绿但指标转弱：警惕假突破，减半执行" }
+            return "灯绿：按计划执行，别追高"
+        }
+        return "数据不足，先等待"
+    }
+
+
+    // MARK: - 顶级风险引擎：VaR / CVaR / 风险调整收益 / 波动率锥 / EWMA
+
+    // 日收益率序列
+    var rets: [Double] {
+        let c = closes
+        if c.count < 2 { return [] }
+        var out: [Double] = []
+        var i = 1
+        while i < c.count {
+            out.append(c[i] / c[i - 1] - 1)
+            i += 1
+        }
+        return out
+    }
+
+    var retMean: Double {
+        let r = rets
+        if r.isEmpty { return 0 }
+        var s = 0.0
+        var i = 0
+        while i < r.count { s += r[i]; i += 1 }
+        return s / Double(r.count)
+    }
+
+    var retSD: Double {
+        let r = rets
+        if r.count < 2 { return 0 }
+        let m = retMean
+        var v = 0.0
+        var i = 0
+        while i < r.count {
+            let d = r[i] - m
+            v += d * d
+            i += 1
+        }
+        return sqrt(v / Double(r.count - 1))
+    }
+
+    // 历史模拟法 VaR（负数表示亏损）
+    func varHist(_ p: Double) -> Double {
+        return HLCore.varHist(rets, p)
+    }
+
+    // CVaR / 期望损失：尾部平均
+    func cvarHist(_ p: Double) -> Double {
+        return HLCore.cvarHist(rets, p)
+    }
+
+    // 参数法 VaR（正态假设）
+    func varParam(_ p: Double) -> Double {
+        return HLCore.varParam(rets, p)
+    }
+
+    var var95Text: String {
+        let h = varHist(0.95)
+        let pa = varParam(0.95)
+        return "历史 " + hfmt(h * 100, 2) + "% · 正态 " + hfmt(pa * 100, 2) + "%"
+    }
+
+    var var99Text: String {
+        let h = varHist(0.99)
+        let pa = varParam(0.99)
+        return "历史 " + hfmt(h * 100, 2) + "% · 正态 " + hfmt(pa * 100, 2) + "%"
+    }
+
+    var cvar95Text: String { hfmt(cvarHist(0.95) * 100, 2) + "%" }
+    var cvar99Text: String { hfmt(cvarHist(0.99) * 100, 2) + "%" }
+
+    // 换算成钱（按持仓份数）
+    // 当前标的的持仓份数（从持久化读取，计算页写入）
+    var qtyGlobal: Double {
+        let d = UserDefaults.standard
+        let q = d.double(forKey: "hl_pos_" + curCode + "_qty")
+        return q > 0 ? q : 0
+    }
+
+    var costGlobal: Double {
+        let d = UserDefaults.standard
+        let c = d.double(forKey: "hl_pos_" + curCode + "_cost")
+        return c > 0 ? c : 0
+    }
+
+    var var95Money: Double { varHist(0.95) * lastPrice * qtyGlobal }
+    var cvar95Money: Double { cvarHist(0.95) * lastPrice * qtyGlobal }
+
+    // 风险调整收益
+    var annRet: Double {
+        let c = closes
+        if c.count < 30 || c[0] <= 0 { return 0 }
+        let years = Double(c.count) / 252.0
+        if years <= 0 { return 0 }
+        return pow(c[c.count - 1] / c[0], 1.0 / years) - 1
+    }
+
+    var annVol: Double { retSD * sqrt(252.0) }
+
+    var sharpe: Double {
+        let v = annVol
+        if v <= 0 { return 0 }
+        return (annRet - 0.02) / v
+    }
+
+    var sortino: Double {
+        let r = rets
+        if r.isEmpty { return 0 }
+        var v = 0.0
+        var cnt = 0
+        var i = 0
+        while i < r.count {
+            if r[i] < 0 { v += r[i] * r[i]; cnt += 1 }
+            i += 1
+        }
+        if cnt == 0 { return 0 }
+        let dv = sqrt(v / Double(cnt)) * sqrt(252.0)
+        if dv <= 0 { return 0 }
+        return (annRet - 0.02) / dv
+    }
+
+    var maxDrawdownPct: Double {
+        let c = closes
+        if c.isEmpty { return 0 }
+        var peak = c[0]
+        var dd = 0.0
+        var i = 0
+        while i < c.count {
+            if c[i] > peak { peak = c[i] }
+            let d = (peak - c[i]) / peak
+            if d > dd { dd = d }
+            i += 1
+        }
+        return dd * 100
+    }
+
+    // 最长水下天数
+    var maxUnderwater: Int {
+        let c = closes
+        if c.isEmpty { return 0 }
+        var peak = c[0]
+        var cur = 0
+        var mx = 0
+        var i = 0
+        while i < c.count {
+            if c[i] >= peak { peak = c[i]; cur = 0 }
+            else { cur += 1; if cur > mx { mx = cur } }
+            i += 1
+        }
+        return mx
+    }
+
+    var calmar: Double {
+        let dd = maxDrawdownPct / 100.0
+        if dd <= 0 { return 0 }
+        return annRet / dd
+    }
+
+    var sharpeText: String {
+        let v = sharpe
+        if v >= 1 { return "优秀" }
+        if v >= 0.5 { return "良好" }
+        if v >= 0 { return "偏弱" }
+        return "亏损"
+    }
+
+    var sharpeColor: Color {
+        let v = sharpe
+        if v >= 0.5 { return Color(red: 0.0, green: 0.84, blue: 0.56) }
+        if v >= 0 { return Color(red: 1.0, green: 0.69, blue: 0.13) }
+        return Color(red: 1.0, green: 0.30, blue: 0.37)
+    }
+
+    // 波动率锥：不同持有期的年化波动
+    func volCone(_ k: Int) -> Double? {
+        return HLCore.volCone(rets, k)
+    }
+
+    var cone5: Double { volCone(5) ?? 0 }
+    var cone10: Double { volCone(10) ?? 0 }
+    var cone20: Double { volCone(20) ?? 0 }
+    var cone60: Double { volCone(60) ?? 0 }
+
+    var coneText: String {
+        if cone5 <= 0 { return "—" }
+        if cone5 > cone60 * 1.2 { return "短期波动高于长期 · 近期震荡加剧" }
+        if cone5 < cone60 * 0.8 { return "短期波动低于长期 · 近期趋于平静" }
+        return "各周期波动接近"
+    }
+
+    // EWMA 波动率预测（RiskMetrics λ=0.94）
+    var ewmaVol: Double {
+        let r = rets
+        if r.isEmpty { return 0 }
+        var v = r[0] * r[0]
+        var i = 1
+        while i < r.count {
+            v = 0.94 * v + 0.06 * r[i] * r[i]
+            i += 1
+        }
+        return sqrt(v * 252.0)
+    }
+
+    var volTrendText: String {
+        let e = ewmaVol
+        let a = annVol
+        if a <= 0 { return "—" }
+        if e > a * 1.15 { return "波动正在放大" }
+        if e < a * 0.85 { return "波动正在收敛" }
+        return "波动平稳"
+    }
+
+    var volTrendColor: Color {
+        let e = ewmaVol
+        let a = annVol
+        if a <= 0 { return HLDim }
+        if e > a * 1.15 { return Color(red: 1.0, green: 0.30, blue: 0.37) }
+        if e < a * 0.85 { return Color(red: 0.0, green: 0.84, blue: 0.56) }
+        return HLDim
+    }
+
+    // MARK: - 市场结构识别
+
+    // 赫斯特指数：>0.55 趋势延续，<0.45 均值回归
+    var hurst: Double? {
+        let c = closes
+        if c.count < 60 { return nil }
+        var lx: [Double] = []
+        var ly: [Double] = []
+        var lag = 8
+        while lag <= min(60, c.count / 4) {
+            var diffs: [Double] = []
+            var i = 0
+            while i + lag < c.count {
+                diffs.append(c[i + lag] - c[i])
+                i += 1
+            }
+            if diffs.count < 5 { lag += 1; continue }
+            var m = 0.0
+            var k = 0
+            while k < diffs.count { m += diffs[k]; k += 1 }
+            m /= Double(diffs.count)
+            var v = 0.0
+            k = 0
+            while k < diffs.count {
+                let d = diffs[k] - m
+                v += d * d
+                k += 1
+            }
+            let sd = sqrt(v / Double(diffs.count))
+            if sd > 0 {
+                lx.append(log(Double(lag)))
+                ly.append(log(sd))
+            }
+            lag += 1
+        }
+        if lx.count < 4 { return nil }
+        var mx = 0.0
+        var my = 0.0
+        var t = 0
+        while t < lx.count { mx += lx[t]; my += ly[t]; t += 1 }
+        mx /= Double(lx.count)
+        my /= Double(ly.count)
+        var num = 0.0
+        var den = 0.0
+        t = 0
+        while t < lx.count {
+            num += (lx[t] - mx) * (ly[t] - my)
+            den += (lx[t] - mx) * (lx[t] - mx)
+            t += 1
+        }
+        if den <= 0 { return nil }
+        return num / den
+    }
+
+    var hurstText: String {
+        let v = hurst
+        if v == nil { return "—" }
+        let x = v!
+        if x > 0.55 { return "趋势延续性强（顺势更有效）" }
+        if x < 0.45 { return "均值回归倾向（高抛低吸更有效）" }
+        return "接近随机游走"
+    }
+
+    var hurstColor: Color {
+        let v = hurst
+        if v == nil { return HLDim }
+        if v! > 0.55 { return Color(red: 1.0, green: 0.69, blue: 0.13) }
+        if v! < 0.45 { return Color(red: 0.30, green: 0.62, blue: 1.0) }
+        return HLDim
+    }
+
+    // 波动率制度：近20日振幅 / 历史平均
+    var volRegime: Double {
+        let r = rets
+        if r.count < 40 { return 1 }
+        var recent = 0.0
+        var i = r.count - 20
+        if i < 0 { i = 0 }
+        var cnt = 0
+        while i < r.count { recent += abs(r[i]); cnt += 1; i += 1 }
+        if cnt == 0 { return 1 }
+        recent /= Double(cnt)
+        var all = 0.0
+        i = 0
+        while i < r.count { all += abs(r[i]); i += 1 }
+        all /= Double(r.count)
+        if all <= 0 { return 1 }
+        return recent / all
+    }
+
+    var volRegimeText: String {
+        let v = volRegime
+        if v > 1.3 { return "高波动制度（止损应放宽）" }
+        if v < 0.7 { return "低波动制度（警惕变盘）" }
+        return "正常波动制度"
+    }
+
+    var volRegimeColor: Color {
+        let v = volRegime
+        if v > 1.3 { return Color(red: 1.0, green: 0.30, blue: 0.37) }
+        if v < 0.7 { return Color(red: 0.30, green: 0.62, blue: 1.0) }
+        return HLDim
+    }
+
+    // 动态止损：基于近期波动的 σ 倍数
+    var sdRecent: Double {
+        let r = rets
+        if r.count < 20 { return 0 }
+        var s = 0.0
+        var i = r.count - 20
+        while i < r.count { s += r[i]; i += 1 }
+        let m = s / 20.0
+        var v = 0.0
+        i = r.count - 20
+        while i < r.count {
+            let d = r[i] - m
+            v += d * d
+            i += 1
+        }
+        return sqrt(v / 19.0)
+    }
+
+    var stop15: Double { lastPrice * (1 - sdRecent * 1.5) }
+    var stop20: Double { lastPrice * (1 - sdRecent * 2.0) }
+    var stop30: Double { lastPrice * (1 - sdRecent * 3.0) }
+
+    // 固定止损相当于几个 σ
+    var stopSigma: Double {
+        let sl = stopLoss
+        if sl == nil { return 0 }
+        if sdRecent <= 0 { return 0 }
+        return abs((sl! / lastPrice - 1)) / sdRecent
+    }
+
+    var stopSigmaText: String {
+        let v = stopSigma
+        if v <= 0 { return "—" }
+        if v < 1.5 { return "仅 " + hfmt(v, 2) + "σ · 太紧，容易被扫" }
+        if v > 4 { return hfmt(v, 2) + "σ · 太宽，失去保护意义" }
+        return hfmt(v, 2) + "σ · 合理区间"
+    }
+
+    var stopSigmaColor: Color {
+        let v = stopSigma
+        if v <= 0 { return HLDim }
+        if v < 1.5 || v > 4 { return Color(red: 1.0, green: 0.30, blue: 0.37) }
+        return Color(red: 0.0, green: 0.84, blue: 0.56)
+    }
+
+    // MARK: - 自适应参数寻优
+
+    var fastPeriods: [Int] { [5, 10, 15, 20] }
+    var slowPeriods: [Int] { [30, 40, 60, 80] }
+
+    // 返回 [fast, slow, 收益%, 回撤%, 评分]
+    func gridAt(_ row: Int) -> [Double] {
+        return HLCore.gridAt(closes, row)
+    }
+
+    var gridBest: Int {
+        var best = 0
+        var bs = -9999.0
+        var i = 0
+        while i < 16 {
+            let r = gridAt(i)
+            if r[4] > bs { bs = r[4]; best = i }
+            i += 1
+        }
+        return best
+    }
+
+    var gridBestText: String {
+        let r = gridAt(gridBest)
+        return "MA" + String(Int(r[0])) + "/" + String(Int(r[1]))
+    }
+
+    // 默认 MA20/60 的排名（1-based）
+    var gridDefaultRank: Int {
+        let d = gridAt(2 * 4 + 2)  // fast=20(index2), slow=60(index2)
+        var rank = 1
+        var i = 0
+        while i < 16 {
+            if gridAt(i)[4] > d[4] { rank += 1 }
+            i += 1
+        }
+        return rank
+    }
+
+    var gridDefaultScore: Double { gridAt(2 * 4 + 2)[4] }
+    var gridBestScore: Double { gridAt(gridBest)[4] }
+
+    var gridAdvice: String {
+        let r = gridDefaultRank
+        if r <= 4 { return "默认参数表现靠前（第" + String(r) + "名），不必改" }
+        if r >= 13 { return "默认参数偏弱（第" + String(r) + "名），但换参数可能是过拟合" }
+        return "默认参数中等（第" + String(r) + "名）"
+    }
+
+    // MARK: - 信号质量审计（红黄绿各自历史表现）
+
+    // 返回 [样本数, 平均涨幅%, 上涨率%]
+    func signalQuality(_ kind: Int) -> [Double] {
+        return HLCore.signalQuality(closes, kind)
+    }
+
+    var redQ: [Double] { signalQuality(0) }
+    var yellowQ: [Double] { signalQuality(1) }
+    var greenQ: [Double] { signalQuality(2) }
+
+    var signalAuditText: String {
+        let r = redQ
+        let g = greenQ
+        if r[0] < 5 || g[0] < 5 { return "样本不足，无法审计" }
+        if g[1] < r[1] { return "⚠ 绿灯样本的历史表现反而更差 —— 说明本策略在下跌中追高" }
+        if r[1] < 0 && g[1] > 0 { return "红灯避开下跌、绿灯捕捉上涨，逻辑成立" }
+        return "信号区分度有限"
+    }
+
+    var signalAuditColor: Color {
+        let g = greenQ
+        let r = redQ
+        if g[0] >= 5 && g[1] < r[1] { return Color(red: 1.0, green: 0.30, blue: 0.37) }
+        return HLDim
+    }
+
 }
 
 // MARK: - 格式化
@@ -2374,6 +3120,12 @@ struct HLProView: View {
                 // 走势与回测（原图表页，已合并进来）
                 HLChartView()
 
+                // 策略实验室
+                HLStrategyView()
+
+                // 风险引擎
+                HLRiskView()
+
                 Text("指标基于历史K线实时计算，仅描述已发生的价格结构，不预测未来。\n本工具仅为纪律辅助，不构成投资建议。")
                     .font(.system(size: 10))
                     .foregroundColor(HLDim2)
@@ -2381,6 +3133,425 @@ struct HLProView: View {
             .padding(10)
         }
         .background(Color(red: 0.043, green: 0.051, blue: 0.071))
+    }
+}
+
+// MARK: - 策略实验室
+
+struct HLStrategyView: View {
+    @EnvironmentObject var m: HLModel
+
+    // 策略对比行（普通函数，不在 ViewBuilder 内声明 let）
+    func btRow(_ i: Int) -> some View {
+        let r = m.btRows[i]
+        let name = m.strategyName(i)
+        let isBest = (i == m.bestStrategyIndex)
+        let retPct = (r[0] - 1) * 100
+        return HStack(spacing: 8) {
+            Text(name)
+                .font(.system(size: 12, weight: isBest ? .bold : .regular))
+                .foregroundColor(isBest ? Color(red: 0.0, green: 0.84, blue: 0.56) : HLText)
+                .frame(width: 104, alignment: .leading)
+            Text(hfmt(retPct, 1) + "%")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(hcolor(retPct))
+                .frame(width: 58, alignment: .trailing)
+            Text(hfmt(r[1], 1) + "%")
+                .font(.system(size: 11))
+                .foregroundColor(HLDim)
+                .frame(width: 52, alignment: .trailing)
+            Text(String(Int(r[2])))
+                .font(.system(size: 11))
+                .foregroundColor(HLDim2)
+                .frame(width: 40, alignment: .trailing)
+            Spacer()
+        }
+        .padding(.vertical, 5)
+        .padding(.horizontal, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(isBest ? Color(red: 0.0, green: 0.84, blue: 0.56).opacity(0.10) : Color.clear)
+        )
+    }
+
+    var body: some View {
+        VStack(spacing: 10) {
+            // 总纲
+            VStack(spacing: 6) {
+                Text("策略实验室")
+                    .font(.system(size: 15, weight: .bold))
+                    .foregroundColor(HLText)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Text("下面所有内容都是对已发生数据的统计，不是对未来的预测。它的作用是帮你在下单前看清胜算和风险，而不是告诉你该买。")
+                    .font(.system(size: 11))
+                    .foregroundColor(HLDim)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(13)
+            .background(RoundedRectangle(cornerRadius: 14).fill(HLCard))
+
+            // 综合建议
+            VStack(spacing: 8) {
+                Text("综合行动建议")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundColor(HLDim)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Text(m.adviceText)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundColor(m.voteColor)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                HStack(spacing: 6) {
+                    Text("多头 " + String(m.voteBull) + " : " + String(m.voteBear) + " 空头")
+                        .font(.system(size: 11))
+                        .foregroundColor(HLDim)
+                    Spacer()
+                    Text(m.voteText)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(m.voteColor)
+                }
+            }
+            .padding(13)
+            .background(RoundedRectangle(cornerRadius: 14).fill(HLCard))
+
+            // 七策略回测对比
+            VStack(spacing: 8) {
+                Text("七种策略在同一段历史上的表现")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundColor(HLDim)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                HStack(spacing: 8) {
+                    Text("策略").font(.system(size: 10)).foregroundColor(HLDim2)
+                        .frame(width: 104, alignment: .leading)
+                    Text("收益").font(.system(size: 10)).foregroundColor(HLDim2)
+                        .frame(width: 58, alignment: .trailing)
+                    Text("回撤").font(.system(size: 10)).foregroundColor(HLDim2)
+                        .frame(width: 52, alignment: .trailing)
+                    Text("交易").font(.system(size: 10)).foregroundColor(HLDim2)
+                        .frame(width: 40, alignment: .trailing)
+                    Spacer()
+                }
+                .padding(.horizontal, 8)
+                ForEach(Array(m.btRows.indices), id: \.self) { i in
+                    self.btRow(i)
+                }
+                Text("最优（收益减去半个回撤后）: " + m.bestStrategyName)
+                    .font(.system(size: 10))
+                    .foregroundColor(HLDim2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Text("历史最优不等于未来最优。参数固定的策略在任何标的上都会阶段性失效。")
+                    .font(.system(size: 10))
+                    .foregroundColor(HLDim2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(13)
+            .background(RoundedRectangle(cornerRadius: 14).fill(HLCard))
+
+            // 历史相似形态
+            VStack(spacing: 6) {
+                Text("历史相似形态（这不是预测）")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundColor(HLDim)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Text("在历史中找出与当前技术形态最接近的日子，看它们之后 20 日实际发生了什么。")
+                    .font(.system(size: 10))
+                    .foregroundColor(HLDim2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                hrow("匹配样本", String(m.similarCount) + " 个", HLDim)
+                hrow("之后20日平均涨跌", hfmt(m.similarAvgRet, 2) + "%", m.similarColor)
+                hrow("上涨概率", hfmt(m.similarWinRate, 0) + "%", HLDim)
+                hrow("上涨时平均涨", hfmt(m.similarAvgWin, 2) + "%", Color(red: 0.0, green: 0.84, blue: 0.56))
+                hrow("下跌时平均跌", hfmt(m.similarAvgLoss, 2) + "%", Color(red: 1.0, green: 0.30, blue: 0.37))
+                hrow("最好情况", hfmt(m.similarBest, 2) + "%", HLDim)
+                hrow("最差情况", hfmt(m.similarWorst, 2) + "%", HLDim)
+                Text(m.similarText)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(m.similarColor)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(13)
+            .background(RoundedRectangle(cornerRadius: 14).fill(HLCard))
+
+            // 蒙特卡洛
+            VStack(spacing: 6) {
+                Text("波动情景推演（基于真实波动率）")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundColor(HLDim)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Text("用过去 60 个交易日的真实波动率随机推演 800 次，给出价格的统计分布区间，不是点位预测。")
+                    .font(.system(size: 10))
+                    .foregroundColor(HLDim2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                hrow("20日后 25%~75%", m.mc20Text, HLText)
+                hrow("20日后 悲观(5%)", hfmt(m.mc20[0], 3), Color(red: 1.0, green: 0.30, blue: 0.37))
+                hrow("20日后 乐观(95%)", hfmt(m.mc20[4], 3), Color(red: 0.0, green: 0.84, blue: 0.56))
+                hrow("60日后 中位", hfmt(m.mc60[2], 3), HLDim)
+                hrow("60日后 25%~75%", hfmt(m.mc60[1], 3) + " ~ " + hfmt(m.mc60[3], 3), HLDim)
+            }
+            .padding(13)
+            .background(RoundedRectangle(cornerRadius: 14).fill(HLCard))
+
+            // 凯利仓位
+            VStack(spacing: 6) {
+                Text("仓位参考（分数凯利）")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundColor(HLDim)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                hrow("原始凯利值", hfmt(m.kellyRaw * 100, 1) + "%", HLDim)
+                hrow("实战建议(1/4)", m.kellyText, Color(red: 1.0, green: 0.69, blue: 0.13))
+                Text(m.kellyReason)
+                    .font(.system(size: 11))
+                    .foregroundColor(HLDim)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Text("凯利公式对参数极其敏感，样本少时误差很大。这里取四分之一作为保守参考。")
+                    .font(.system(size: 10))
+                    .foregroundColor(HLDim2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(13)
+            .background(RoundedRectangle(cornerRadius: 14).fill(HLCard))
+        }
+    }
+}
+
+// MARK: - 风险引擎页
+
+struct HLRiskView: View {
+    @EnvironmentObject var m: HLModel
+
+    func gridRow(_ i: Int) -> some View {
+        let r = m.gridAt(i)
+        let isBest = (i == m.gridBest)
+        let isDefault = (Int(r[0]) == 20 && Int(r[1]) == 60)
+        var label = "MA" + String(Int(r[0])) + "/" + String(Int(r[1]))
+        if isDefault { label += " (默认)" }
+        return HStack(spacing: 8) {
+            Text(label)
+                .font(.system(size: 11, weight: (isBest || isDefault) ? .bold : .regular))
+                .foregroundColor(isBest ? Color(red: 0.0, green: 0.84, blue: 0.56) : (isDefault ? HLAccent : HLText))
+                .frame(width: 96, alignment: .leading)
+            Text(hfmt(r[2], 1) + "%")
+                .font(.system(size: 11))
+                .foregroundColor(hcolor(r[2]))
+                .frame(width: 54, alignment: .trailing)
+            Text(hfmt(r[3], 1) + "%")
+                .font(.system(size: 10))
+                .foregroundColor(HLDim)
+                .frame(width: 48, alignment: .trailing)
+            Text(hfmt(r[4], 1))
+                .font(.system(size: 10, weight: isBest ? .bold : .regular))
+                .foregroundColor(isBest ? Color(red: 0.0, green: 0.84, blue: 0.56) : HLDim2)
+                .frame(width: 44, alignment: .trailing)
+            Spacer()
+        }
+        .padding(.vertical, 3)
+        .padding(.horizontal, 6)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(isBest ? Color(red: 0.0, green: 0.84, blue: 0.56).opacity(0.10) : Color.clear)
+        )
+    }
+
+    func signalRow(_ name: String, _ q: [Double], _ color: Color) -> some View {
+        return HStack(spacing: 8) {
+            Text(name)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(color)
+                .frame(width: 52, alignment: .leading)
+            Text(String(Int(q[0])) + " 次")
+                .font(.system(size: 11))
+                .foregroundColor(HLDim)
+                .frame(width: 52, alignment: .trailing)
+            Text(hfmt(q[1], 2) + "%")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(hcolor(q[1]))
+                .frame(width: 62, alignment: .trailing)
+            Text(hfmt(q[2], 0) + "% 上涨")
+                .font(.system(size: 10))
+                .foregroundColor(HLDim2)
+                .frame(width: 66, alignment: .trailing)
+            Spacer()
+        }
+    }
+
+    var body: some View {
+        VStack(spacing: 10) {
+            // 在险价值
+            VStack(spacing: 6) {
+                Text("在险价值 VaR / 期望损失 CVaR")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundColor(HLDim)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Text("在正常市场下，一天内你最多可能亏多少。历史法用真实分布，正态法会低估厚尾。")
+                    .font(.system(size: 10))
+                    .foregroundColor(HLDim2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                hrow("单日 VaR 95%", m.var95Text, Color(red: 1.0, green: 0.69, blue: 0.13))
+                hrow("单日 VaR 99%", m.var99Text, Color(red: 1.0, green: 0.30, blue: 0.37))
+                hrow("CVaR 95%（尾部平均）", m.cvar95Text, Color(red: 1.0, green: 0.30, blue: 0.37))
+                hrow("CVaR 99%", m.cvar99Text, Color(red: 1.0, green: 0.30, blue: 0.37))
+                if m.qtyGlobal > 0 {
+                    hrow("按持仓换算 95%", hfmt(m.var95Money, 2) + " 元", HLDim)
+                    hrow("极端情况 CVaR", hfmt(m.cvar95Money, 2) + " 元", HLDim)
+                }
+            }
+            .padding(13)
+            .background(RoundedRectangle(cornerRadius: 14).fill(HLCard))
+
+            // 风险调整收益
+            VStack(spacing: 6) {
+                Text("风险调整收益")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundColor(HLDim)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                hrow("年化收益", hfmt(m.annRet * 100, 2) + "%", hcolor(m.annRet * 100))
+                hrow("年化波动", hfmt(m.annVol * 100, 2) + "%", HLDim)
+                hrow("夏普比率", hfmt(m.sharpe, 3) + " · " + m.sharpeText, m.sharpeColor)
+                hrow("索提诺比率", hfmt(m.sortino, 3), HLDim)
+                hrow("Calmar 比率", hfmt(m.calmar, 3), HLDim)
+                hrow("最大回撤", hfmt(m.maxDrawdownPct, 1) + "%", Color(red: 1.0, green: 0.30, blue: 0.37))
+                hrow("最长水下", String(m.maxUnderwater) + " 个交易日", HLDim)
+                Text("最长水下天数比最大回撤更折磨人 —— 它告诉你「难受」会持续多久。")
+                    .font(.system(size: 10))
+                    .foregroundColor(HLDim2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(13)
+            .background(RoundedRectangle(cornerRadius: 14).fill(HLCard))
+
+            // 波动率结构
+            VStack(spacing: 6) {
+                Text("波动率结构")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundColor(HLDim)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                hrow("5日", hfmt(m.cone5 * 100, 2) + "%", HLDim)
+                hrow("10日", hfmt(m.cone10 * 100, 2) + "%", HLDim)
+                hrow("20日", hfmt(m.cone20 * 100, 2) + "%", HLDim)
+                hrow("60日", hfmt(m.cone60 * 100, 2) + "%", HLDim)
+                hrow("EWMA 预测明日", hfmt(m.ewmaVol * 100, 2) + "%", HLDim)
+                Text(m.volTrendText)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(m.volTrendColor)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Text(m.coneText)
+                    .font(.system(size: 11))
+                    .foregroundColor(HLDim)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Text(m.volRegimeText)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(m.volRegimeColor)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(13)
+            .background(RoundedRectangle(cornerRadius: 14).fill(HLCard))
+
+            // 市场结构
+            VStack(spacing: 6) {
+                Text("市场结构识别")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundColor(HLDim)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                hrow("赫斯特指数 H", hfmt(m.hurst, 3), m.hurstColor)
+                Text(m.hurstText)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(m.hurstColor)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Text("H>0.55 说明涨了还会涨、跌了还会跌，追趋势有效；H<0.45 说明涨多了会跌回来，高抛低吸有效。")
+                    .font(.system(size: 10))
+                    .foregroundColor(HLDim2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(13)
+            .background(RoundedRectangle(cornerRadius: 14).fill(HLCard))
+
+            // 动态止损
+            VStack(spacing: 6) {
+                Text("动态止损（按真实波动）")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundColor(HLDim)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                hrow("近20日日均波动", hfmt(m.sdRecent * 100, 2) + "%", HLDim)
+                hrow("1.5σ 紧", hfmt(m.stop15, 4), HLDim)
+                hrow("2.0σ 标准", hfmt(m.stop20, 4), Color(red: 1.0, green: 0.69, blue: 0.13))
+                hrow("3.0σ 宽", hfmt(m.stop30, 4), HLDim)
+                hrow("你的固定止损", hfmt(m.stopLoss, 4), HLText)
+                Text(m.stopSigmaText)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(m.stopSigmaColor)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(13)
+            .background(RoundedRectangle(cornerRadius: 14).fill(HLCard))
+
+            // 参数寻优
+            VStack(spacing: 8) {
+                Text("参数敏感性检验")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundColor(HLDim)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Text("把 16 组均线参数都跑一遍。如果只有一组特别好，多半是过拟合，不是真规律。")
+                    .font(.system(size: 10))
+                    .foregroundColor(HLDim2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                HStack(spacing: 8) {
+                    Text("参数").font(.system(size: 9)).foregroundColor(HLDim2)
+                        .frame(width: 96, alignment: .leading)
+                    Text("收益").font(.system(size: 9)).foregroundColor(HLDim2)
+                        .frame(width: 54, alignment: .trailing)
+                    Text("回撤").font(.system(size: 9)).foregroundColor(HLDim2)
+                        .frame(width: 48, alignment: .trailing)
+                    Text("评分").font(.system(size: 9)).foregroundColor(HLDim2)
+                        .frame(width: 44, alignment: .trailing)
+                    Spacer()
+                }
+                .padding(.horizontal, 6)
+                ForEach(Array(0..<16), id: \.self) { i in
+                    self.gridRow(i)
+                }
+                Text("最优: " + m.gridBestText + " · 默认 MA20/60 排第 " + String(m.gridDefaultRank) + "/16")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(HLText)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Text(m.gridAdvice)
+                    .font(.system(size: 11))
+                    .foregroundColor(HLDim)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(13)
+            .background(RoundedRectangle(cornerRadius: 14).fill(HLCard))
+
+            // 信号审计
+            VStack(spacing: 8) {
+                Text("信号质量审计（最重要的自检）")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundColor(HLDim)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Text("每个灯亮起之后 20 日，实际发生了什么。这是对这个策略本身的检验。")
+                    .font(.system(size: 10))
+                    .foregroundColor(HLDim2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                HStack(spacing: 8) {
+                    Text("信号").font(.system(size: 9)).foregroundColor(HLDim2)
+                        .frame(width: 52, alignment: .leading)
+                    Text("样本").font(.system(size: 9)).foregroundColor(HLDim2)
+                        .frame(width: 52, alignment: .trailing)
+                    Text("后20日").font(.system(size: 9)).foregroundColor(HLDim2)
+                        .frame(width: 62, alignment: .trailing)
+                    Text("胜率").font(.system(size: 9)).foregroundColor(HLDim2)
+                        .frame(width: 66, alignment: .trailing)
+                    Spacer()
+                }
+                signalRow("红灯", m.redQ, Color(red: 1.0, green: 0.30, blue: 0.37))
+                signalRow("黄灯", m.yellowQ, Color(red: 1.0, green: 0.69, blue: 0.13))
+                signalRow("绿灯", m.greenQ, Color(red: 0.0, green: 0.84, blue: 0.56))
+                Text(m.signalAuditText)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(m.signalAuditColor)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(13)
+            .background(RoundedRectangle(cornerRadius: 14).fill(HLCard))
+        }
     }
 }
 
