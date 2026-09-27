@@ -2470,8 +2470,12 @@ struct HLWatchView: View {
                 }
                 .padding(13)
                 .background(RoundedRectangle(cornerRadius: 14).fill(HLCard))
+                .contentShape(Rectangle())
+                .onTapGesture { HLEndEditing() }
             }
             .padding(10)
+            .contentShape(Rectangle())
+            .onTapGesture { HLEndEditing() }
         }
         .background(Color(red: 0.043, green: 0.051, blue: 0.071))
     }
@@ -2851,21 +2855,6 @@ struct HLCalcView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 10) {
-                // 收起键盘
-                if HLEditingHint {
-                    Button {
-                        HLEndEditing()
-                    } label: {
-                        Text("收起键盘")
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundColor(.white)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 9)
-                            .background(RoundedRectangle(cornerRadius: 10).fill(HLAccent))
-                    }
-                    .buttonStyle(PlainButtonStyle())
-                }
-
                 // 持仓
                 VStack(spacing: 8) {
                     Text("我的持仓")
@@ -2981,12 +2970,13 @@ struct HLCalcView: View {
                     .font(.system(size: 10))
                     .foregroundColor(HLDim2)
             }
-            .padding(10)
-        }
-        .background(Color(red: 0.043, green: 0.051, blue: 0.071))
-        .contentShape(Rectangle())
-        .onTapGesture { HLEndEditing() }
-        .onAppear { loadPos() }
+                .padding(10)
+                .contentShape(Rectangle())
+                .onTapGesture { HLEndEditing() }
+            }
+            .background(Color(red: 0.043, green: 0.051, blue: 0.071))
+            .onTapGesture { HLEndEditing() }
+            .onAppear { loadPos() }
         .onChange(of: m.curCode) { _ in loadPos() }
         .onChange(of: costText) { _ in savePos() }
         .onChange(of: qtyText) { _ in savePos() }
