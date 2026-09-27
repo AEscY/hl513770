@@ -1325,6 +1325,7 @@ let HLDim = Color(white: 0.55)
 let HLDim2 = Color(white: 0.40)
 let HLCard = Color(red: 0.078, green: 0.094, blue: 0.125)
 let HLAccent = Color(red: 0.30, green: 0.62, blue: 1.0)
+let HLEditingHint = true
 
 func hrow(_ label: String, _ value: String, _ color: Color) -> some View {
     HStack(alignment: .firstTextBaseline) {
@@ -2047,6 +2048,21 @@ struct HLCalcView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 10) {
+                // 收起键盘
+                if HLEditingHint {
+                    Button {
+                        HLEndEditing()
+                    } label: {
+                        Text("收起键盘")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundColor(.white)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 9)
+                            .background(RoundedRectangle(cornerRadius: 10).fill(HLAccent))
+                    }
+                    .buttonStyle(PlainButtonStyle())
+                }
+
                 // 持仓
                 VStack(spacing: 8) {
                     Text("我的持仓")
@@ -2165,6 +2181,8 @@ struct HLCalcView: View {
             .padding(10)
         }
         .background(Color(red: 0.043, green: 0.051, blue: 0.071))
+        .contentShape(Rectangle())
+        .onTapGesture { HLEndEditing() }
         .onAppear { loadPos() }
         .onChange(of: m.curCode) { _ in loadPos() }
         .onChange(of: costText) { _ in savePos() }
@@ -2213,9 +2231,24 @@ struct HLField: View {
                 .padding(9)
                 .background(RoundedRectangle(cornerRadius: 9).fill(HLCard))
                 .foregroundColor(HLText)
+                .toolbar {
+                    ToolbarItem(placement: .keyboard) {
+                        HStack {
+                            Spacer()
+                            Button("完成") { HLEndEditing() }
+                        }
+                    }
+                }
         }
         .frame(maxWidth: .infinity)
     }
+}
+
+func HLEndEditing() {
+    UIApplication.shared.sendAction(
+        #selector(UIResponder.resignFirstResponder),
+        to: nil, from: nil, for: nil
+    )
 }
 
 // MARK: - 专业分析页
