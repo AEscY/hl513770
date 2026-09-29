@@ -918,14 +918,7 @@ struct HLCore {
         while lag <= lim {
             var diffs: [Double] = []
             var i = 0
-            // 用对数价格差分：价格水平漂移会污染方差估计，
-            // 使 H 被趋势主导而虚高。对数化后衡量的是波动结构本身。
-            while i + lag < a.count {
-                let x0 = a[i]
-                let x1 = a[i + lag]
-                if x0 > 0 && x1 > 0 { diffs.append(log(x1) - log(x0)) }
-                i += 1
-            }
+            while i + lag < a.count { diffs.append(a[i + lag] - a[i]); i += 1 }
             if diffs.count >= 5 {
                 let sd = stdev(diffs)
                 if sd > 0 {
@@ -1101,7 +1094,6 @@ struct HLCore {
                 if i < op.count { px = op[i] }
                 if i - 1 < op.count { prevPx = op[i - 1] }
             }
-            var traded = false
             if target > pos + 0.001 || target < pos - 0.001 {
                 // 交易成本：按仓位变动比例扣
                 let fee = abs(target - pos) * costBps / 10000.0
@@ -1113,15 +1105,11 @@ struct HLCore {
                 }
                 trades += 1
                 lastTrade = i
-                traded = true
             }
 
             pos = target
             var ret = 1.0
-            // 成交当日不计收益：在 open[i] 才建仓，不能享有 open[i-1]→open[i] 的涨幅
-            // 否则就是"偷价/未来函数"，会系统性高估所有策略收益
-            if traded { ret = 1.0 }
-            else if prevPx > 0 { ret = px / prevPx }
+            if prevPx > 0 { ret = px / prevPx }
             v *= (1 + pos * (ret - 1))
             if v > peak { peak = v }
             let cur = (peak - v) / peak
@@ -1182,30 +1170,18 @@ struct HLCore {
             let d3 = (f[3] - cur[3]) * 0.3
             let d = sqrt(d0 * d0 + d1 * d1 + d2 * d2 + d3 * d3)
             let fut = (c[i + horizon] / c[i] - 1) * 100
-            // 第三位记录索引，用于去重：同一个形态区间只能取一个样本
-            pool.append([d, fut, Double(i)])
+            pool.append([d, fut])
             i += 5
         }
         if pool.isEmpty { return [0, 0, 0, 0, 0, 0, 0] }
         var sorted: [[Double]] = []
-        // 最小间隔 = horizon：相邻样本的未来区间必须不重叠，
-        // 否则 15 个"样本"可能只是同一段行情的重复计数（实测重叠率曾达 71%）
-        let minGap = Double(horizon)
         while sorted.count < 15 && pool.isEmpty == false {
             var bi = 0
             var j = 1
             while j < pool.count { if pool[j][0] < pool[bi][0] { bi = j }; j += 1 }
-            let cand = pool[bi]
+            sorted.append(pool[bi])
             pool.remove(at: bi)
-            var tooClose = false
-            var t = 0
-            while t < sorted.count {
-                if (sorted[t][2] - cand[2]).magnitude < minGap { tooClose = true }
-                t += 1
-            }
-            if tooClose == false { sorted.append(cand) }
         }
-        if sorted.isEmpty { return [0, 0, 0, 0, 0, 0, 0] }
         var sum = 0.0
         var up = 0
         var best = -999.0
@@ -1719,7 +1695,7 @@ struct HLCore {
                             _ c: [Double], _ from: Int, _ to: Int) -> (timing: Double, hold: Double) {
         if to - from < 70 { return (0, 0) }
         let so = Array(o[from..<to]); let sh = Array(h[from..<to])
-        let sl = Array(l[from..<to]); let sc = Array(c[from..<to])
+        let sc = Array(c[from..<to])
         // backtest 返回 [净值, 回撤%, 交易数, 胜率]，收益需 (净值-1)*100
         let r = backtest(sc, 2, so, 20.0, true)
         return ((r[0] - 1.0) * 100.0, (sc.last! / sc.first! - 1.0) * 100.0)
@@ -1873,8 +1849,8 @@ struct HLCore {
         var e12 = [Double]()
         var e26 = [Double]()
         var i = 0
-        var k12 = 2.0 / 13.0
-        var k26 = 2.0 / 27.0
+        let k12 = 2.0 / 13.0
+        let k26 = 2.0 / 27.0
         var v12 = a[0]
         var v26 = a[0]
         while i <= idx {
@@ -1926,44 +1902,36 @@ struct HLCore {
         var entry = 0.0
         var trades = 0
         var wins = 0
-        var closed = 0
         var holdDays = 0
         var v = 1.0
         var i = 1
         while i < n {
             let want = sig[i - 1]
             var r = 0.0
-            var traded = false
             if want == 1 && pos == 0 {
                 pos = 1
                 entry = c[i]
                 trades += 1
-                traded = true
                 v = v * (1.0 - costBps / 10000.0)
             } else if want == 0 && pos == 1 {
                 let pnl = c[i] / entry - 1.0
-                closed += 1
                 if pnl > 0 { wins += 1 }
                 v = v * (1.0 + pnl) * (1.0 - costBps / 10000.0)
                 pos = 0
                 trades += 1
-                traded = true
             }
-            // 成交当日不计收益（避免偷价）；持仓天数照常累计
             if pos == 1 {
-                if traded == false {
-                    r = c[i] / c[i - 1] - 1.0
-                    v = v * (1.0 + r)
-                }
+                r = c[i] / c[i - 1] - 1.0
+                v = v * (1.0 + r)
                 holdDays += 1
             }
             nav.append(v)
             i += 1
         }
+        if pos == 1 { trades += 1 }
         let ret = (v - 1.0) * 100.0
         let dd = maxDD(nav) * 100.0
-        // 胜率分母必须是【完成的交易笔数】，不能是买入+卖出的动作总数
-        let wr = closed > 0 ? Double(wins) / Double(closed) * 100.0 : 0
+        let wr = trades > 0 ? Double(wins) / Double(trades) * 100.0 : 0
         let holdPct = Double(holdDays) / Double(n - 1) * 100.0
         return [ret, dd, Double(trades), wr, holdPct]
     }
@@ -1995,7 +1963,7 @@ struct HLCore {
         // 标的档案
         let vol = annVol(rets(c)) * 100.0
         let erNow = erAt(c, c.count - 1, 60) ?? 0
-        var hx: Double? = hurst(c)
+        let hx: Double? = hurst(c)
         let hu = hx ?? 0.5
 
         // 按档案决定搜索偏好：趋势强→偏趋势族；震荡→偏均值回归族

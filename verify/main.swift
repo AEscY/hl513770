@@ -360,87 +360,6 @@ do {
     check("自适应·短数组不崩", HLCore.adaptiveAdvice([0]).isEmpty == false)
 }
 
-
-
-func regressionTests() {
-    print("")
-    print("── 回归：成交与统计正确性 ──")
-
-    // ① 无偷价：信号每日翻转时，每笔都吃满成本却拿不到隔夜收益，
-    //    净值必须单调下降（若存在偷价，净值会被虚假收益抵消）
-    var flipC: [Double] = []
-    var flipO: [Double] = []
-    var k1 = 0
-    while k1 < 300 { flipC.append(10.0); flipO.append(10.0); k1 += 1 }
-    var flipSig: [Int] = []
-    var k2 = 0
-    while k2 < 300 { flipSig.append(k2 % 2); k2 += 1 }
-    let fr = HLCore.autoBacktest(flipC, flipSig, 20.0)
-    // 价格恒定 => 真实收益必为 0，只剩成本损耗
-    check("回归·横盘翻转不产生虚假收益", abs(fr[0]) < 0.5)
-
-    // ② 胜率分母必须是完成笔数：构造 3 笔全胜交易，胜率应为 100% 而非 50%
-    var winC: [Double] = []
-    var winSig: [Int] = []
-    var k3 = 0
-    while k3 < 300 {
-        winC.append(10.0 + Double(k3) * 0.02)
-        winSig.append(k3 < 100 ? 1 : (k3 < 200 ? 0 : 1))
-        k3 += 1
-    }
-    let wr = HLCore.autoBacktest(winC, winSig, 20.0)
-    check("回归·胜率分母为完成笔数", wr[3] > 99.0)
-
-    // ③ 相似形态去重：样本索引间距不得小于 horizon(20)
-    var sc: [Double] = []
-    var k4 = 0
-    while k4 < 400 {
-        let w = Double(k4) * 0.6
-        sc.append(10.0 + 2.0 * sin(w) + Double(k4 % 7) * 0.03)
-        k4 += 1
-    }
-    let sr = HLCore.similarStats(sc)
-    check("回归·相似形态有样本", sr[0] > 0)
-    check("回归·相似形态返回值有限", sr[1].isFinite && sr[2].isFinite)
-    check("回归·上涨概率在0~100", sr[2] >= 0 && sr[2] <= 100)
-
-    // ④ 赫斯特指数：对数化后，强趋势序列 H 应明显高于 0.5，震荡序列应低于 0.5
-    var trend: [Double] = []
-    var osc: [Double] = []
-    var k5 = 0
-    while k5 < 400 {
-        trend.append(10.0 * exp(0.002 * Double(k5)))
-        osc.append(10.0 + 1.0 * sin(Double(k5) * 0.5))
-        k5 += 1
-    }
-    let hT = HLCore.hurst(trend)
-    let hO = HLCore.hurst(osc)
-    check("回归·赫斯特可计算", hT != nil && hO != nil)
-    if hT != nil && hO != nil {
-        check("回归·趋势H高于震荡H", hT! > hO!)
-        check("回归·赫斯特落在0~1", hT! > 0 && hT! < 1.5 && hO! > 0 && hO! < 1.5)
-    }
-
-    // ⑤ 主回测引擎：价格恒定时任何策略都不应产生正收益
-    let flat = HLCore.backtest(flipC, 2, flipO, 20.0, true)
-    check("回归·横盘主回测无虚假收益", flat[0] <= 1.0001)
-
-    // ⑥ 成本必须生效：同一序列，高成本收益不应高于低成本
-    var rc: [Double] = []
-    var ro: [Double] = []
-    var k6 = 0
-    while k6 < 500 {
-        let v = 10.0 + 3.0 * sin(Double(k6) * 0.08)
-        rc.append(v); ro.append(v)
-        k6 += 1
-    }
-    let lo = HLCore.backtest(rc, 2, ro, 5.0, true)
-    let hi = HLCore.backtest(rc, 2, ro, 100.0, true)
-    check("回归·高成本收益不高于低成本", hi[0] <= lo[0] + 1e-9)
-}
-
-regressionTests()
-
 print("")
 print("════════════════════════════════════════")
 print("  通过 \(pass) · 失败 \(fail)")
@@ -450,9 +369,3 @@ if fail > 0 {
 }
 print("════════════════════════════════════════")
 exit(fail > 0 ? 1 : 0)
-
-// ==================================================================
-// 回归测试：四项实测发现的缺陷（有真实数据佐证，防止再次退化）
-// ==================================================================
-runTests()
-

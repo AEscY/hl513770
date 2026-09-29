@@ -2019,6 +2019,11 @@ final class HLModel: ObservableObject {
 
     var voteBull: Int { Int(voteResult[0]) }
     var voteBear: Int { Int(voteResult[1]) }
+    var voteBullBearText: String {
+        let a = "多头 " + String(voteBull)
+        let b = " : " + String(voteBear)
+        return a + b + " 空头"
+    }
     var voteScore: Int { Int(voteResult[2]) }
 
     var voteText: String {
@@ -2500,6 +2505,11 @@ final class HLModel: ObservableObject {
     }
 
     var gridDefaultScore: Double { gridAt(2 * 4 + 2)[4] }
+    var gridSummaryText: String {
+        let a = "最优: " + gridBestText
+        let b = " · 默认 MA20/60 排第 " + String(gridDefaultRank)
+        return a + b + "/16"
+    }
     var gridBestScore: Double { gridAt(gridBest)[4] }
 
     var gridAdvice: String {
@@ -4258,6 +4268,11 @@ struct HLCalcView: View {
     var stopLevel: Double { m.stopLoss ?? m.periodLow }
     var oldLoss: Double { (stopLevel - cost) * qty }
     var newLoss: Double { (stopLevel - newCost) * newQty }
+    var newLossText: String {
+        let head = hfmt(newLoss, 2) + " 元（"
+        let tail: String = newLoss < oldLoss ? ("多亏 " + hfmt(abs(newLoss - oldLoss), 2)) : "优于现在"
+        return head + tail + "）"
+    }
     var tNet: Double { (hiP - loP) * 100 - fee * 2 }
 
     var body: some View {
@@ -4293,8 +4308,7 @@ struct HLCalcView: View {
                     hrow("回本线",
                          (backDiff >= 0 ? "降低 " : "提高 ") + hfmt(abs(backDiff), 1) + " 个点",
                          backDiff >= 0 ? Color(red: 0.0, green: 0.84, blue: 0.56) : Color(red: 1.0, green: 0.30, blue: 0.37))
-                    hrow("跌到止损位",
-                         hfmt(newLoss, 2) + " 元（" + (newLoss < oldLoss ? "多亏 " + hfmt(abs(newLoss - oldLoss), 2) : "优于现在") + "）",
+                    hrow("跌到止损位", newLossText,
                          newLoss < oldLoss ? Color(red: 1.0, green: 0.30, blue: 0.37) : Color(red: 0.0, green: 0.84, blue: 0.56))
                     Text(m.signal == .red
                          ? "当前红灯，规则禁止加仓。摊薄虽让回本线降 \(hfmt(backDiff, 1)) 个点，但风险敞口从 \(hfmt(qty, 0)) 份扩大到 \(hfmt(newQty, 0)) 份。"
@@ -4523,22 +4537,22 @@ struct HLProView: View {
                         .foregroundColor(HLDim)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     HLMeter(label: "RSI (14)", value: HLV(m.rsi(14)),
-                            text: hfmt(m.rsi(14), 1), lo: 0, hi: 100,
+                            text: hfmt(m.rsi(14), 1),
                             lowZone: 30, highZone: 70)
                     HLMeter(label: "RSI (24) 长周期", value: HLV(m.rsi(24)),
-                            text: hfmt(m.rsi(24), 1), lo: 0, hi: 100,
+                            text: hfmt(m.rsi(24), 1),
                             lowZone: 30, highZone: 70)
                     HLMeter(label: "KDJ · K", value: HLV(m.kValue),
-                            text: hfmt(m.kValue, 1), lo: 0, hi: 100,
+                            text: hfmt(m.kValue, 1),
                             lowZone: 20, highZone: 80)
                     HLMeter(label: "KDJ · D", value: HLV(m.dValue),
-                            text: hfmt(m.dValue, 1), lo: 0, hi: 100,
+                            text: hfmt(m.dValue, 1),
                             lowZone: 20, highZone: 80)
                     HLMeter(label: "KDJ · J", value: HLV(m.jValue),
                             text: hfmt(m.jValue, 1), lo: -20, hi: 120,
                             lowZone: 0, highZone: 100)
                     HLMeter(label: "威廉 %R (14) 绝对值", value: -HLV(m.williamsR),
-                            text: hfmt(m.williamsR, 1), lo: 0, hi: 100,
+                            text: hfmt(m.williamsR, 1),
                             lowZone: 20, highZone: 80)
                     hrow("KDJ 状态", m.kdjText, HLDim)
                     Text("RSI/KDJ：>80 超买区，<20 超卖区。威廉 %R 已取绝对值，>80 超买、<20 超卖。")
@@ -4630,13 +4644,15 @@ struct HLStrategyView: View {
         let br = m.v2Row(bi)
         let name = m.v2Name(bi)
         let cnt = Int(br[2])
+        let dSeg1 = "净值 " + hfmt(br[0], 2) + "% · 回撤 " + hfmt(br[1], 1)
+        let dSeg2 = "% · " + String(cnt) + " 笔 · 胜率 " + hfmt(br[3], 1)
+        let dSeg3 = "% · 最大连亏 " + String(Int(br[7])) + " 次"
+        let detailText = dSeg1 + dSeg2 + dSeg3
         return VStack(alignment: .leading, spacing: 4) {
             Text("综合最优：" + name)
                 .font(.system(size: 11, weight: .bold))
                 .foregroundColor(HLDown)
-            Text("净值 " + hfmt(br[0], 2) + "% · 回撤 " + hfmt(br[1], 1)
-                 + "% · " + String(cnt) + " 笔 · 胜率 " + hfmt(br[3], 1)
-                 + "% · 最大连亏 " + String(Int(br[7])) + " 次")
+            Text(detailText)
                 .font(.system(size: 9.5))
                 .foregroundColor(HLDim)
             Text("样本判定：" + m.sampleVerdict(cnt))
@@ -4819,7 +4835,7 @@ struct HLStrategyView: View {
                     .foregroundColor(m.voteColor)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 HStack(spacing: 6) {
-                    Text("多头 " + String(m.voteBull) + " : " + String(m.voteBear) + " 空头")
+                    Text(m.voteBullBearText)
                         .font(.system(size: 11))
                         .foregroundColor(HLDim)
                     Spacer()
@@ -5230,7 +5246,7 @@ struct HLRiskView: View {
                 ForEach(Array(0..<16), id: \.self) { i in
                     self.gridRow(i)
                 }
-                Text("最优: " + m.gridBestText + " · 默认 MA20/60 排第 " + String(m.gridDefaultRank) + "/16")
+                Text(m.gridSummaryText)
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundColor(HLText)
                     .frame(maxWidth: .infinity, alignment: .leading)
