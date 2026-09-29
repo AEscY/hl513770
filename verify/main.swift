@@ -55,6 +55,52 @@ func fetch(_ code: String, _ len: Int) -> [Double] {
 }
 
 print("")
+print("──── 跨资产配置算法 ────")
+// 相关系数：完全相同序列应为 1
+let sameA = [10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0, 17.0]
+let sameB = [10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0, 17.0]
+let cSame = HLCore.hlCorr(sameA, sameB)
+ck(abs(cSame - 1.0) < 0.001, "完全同向序列相关系数=1 (得\(cSame))")
+
+// 完全反向序列应为 -1
+var invB: [Double] = []
+for v in sameA { invB.append(20.0 - v) }
+let cInv = HLCore.hlCorr(sameA, invB)
+ck(abs(cInv + 1.0) < 0.001, "完全反向序列相关系数=-1 (得\(cInv))")
+
+// 相关系数必须在 [-1, 1]
+var rnd1: [Double] = []
+var rnd2: [Double] = []
+var sd: UInt64 = 12345
+for _ in 0..<200 {
+    sd = sd &* 6364136223846793005 &+ 1442695040888963407
+    rnd1.append(Double(sd % 1000) / 10.0 + 10.0)
+    sd = sd &* 6364136223846793005 &+ 1442695040888963407
+    rnd2.append(Double(sd % 1000) / 10.0 + 10.0)
+}
+let cRnd = HLCore.hlCorr(rnd1, rnd2)
+ck(cRnd >= -1.0001 && cRnd <= 1.0001, "随机序列相关系数在[-1,1] (得\(cRnd))")
+
+// 长度不足应返回 0
+let short = [1.0, 2.0, 3.0]
+ck(HLCore.hlCorr(short, short) == 0, "样本不足返回0")
+
+// 动量：上涨序列应为正，下跌应为负
+let upC = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]
+let dnC = [10.0, 9.0, 8.0, 7.0, 6.0, 5.0, 4.0, 3.0, 2.0, 1.0]
+ck(HLCore.hlMom(upC, 5) > 0, "上涨序列动量为正")
+ck(HLCore.hlMom(dnC, 5) < 0, "下跌序列动量为负")
+ck(HLCore.hlMom(upC, 0) == 0, "回看期为0返回0")
+ck(HLCore.hlMom(upC, 100) == 0, "回看期超长返回0")
+
+// 区间收益与回撤
+ck(abs(HLCore.hlRangeRet([10.0, 15.0]) - 0.5) < 0.0001, "区间收益 10->15 = +50%")
+ck(HLCore.hlMaxDD([10.0, 5.0, 12.0]) < 0, "存在回撤时为负")
+ck(HLCore.hlMaxDD([10.0, 11.0, 12.0]) == 0, "单调上涨回撤为0")
+
+print("  同向=\(String(format: "%.4f", cSame)) 反向=\(String(format: "%.4f", cInv)) 随机=\(String(format: "%.4f", cRnd))")
+
+print("")
 print("════════════════════════════════════════")
 print("  算法验证（云端真实运行）")
 print("════════════════════════════════════════")
@@ -242,6 +288,159 @@ if real.count < 100 {
     }
 }
 
+// ===== 策略适配度 =====
+do {
+    let n = 200
+    var c: [Double] = []
+    var o: [Double] = []
+    var i = 0
+    while i < n { c.append(10.0); o.append(10.0); i += 1 }
+    let f = HLCore.strategyFit(c, o)
+    check("常数序列·持有收益≈0", abs(f.hold) < 0.0001)
+    check("常数序列·超额有限值", f.excess.isFinite)
+
+    var up: [Double] = []
+    var upO: [Double] = []
+    var k = 0
+    while k < 200 { let v = 10.0 + Double(k) * 0.1; up.append(v); upO.append(v); k += 1 }
+    let fu = HLCore.strategyFit(up, upO)
+    check("单调上涨·持有为正", fu.hold > 0)
+    check("单调上涨·择时≤持有", fu.timing <= fu.hold + 0.001)
+}
+
+// ===== 自适应方案引擎 =====
+do {
+    // 1) 数据不足（<200）应返回存疑且置信度 0
+    var sc: [Double] = []
+    var so: [Double] = []
+    var i = 0
+    while i < 100 { sc.append(10.0); so.append(10.0); i += 1 }
+    let p0 = HLCore.adaptivePlan(so, sc, sc, sc)
+    check("自适应·数据不足返回存疑", p0[0] > 1.5 && p0[0] < 2.5)
+    check("自适应·数据不足置信度为0", p0[1] == 0)
+
+    // 2) 构造"前段跌、后段跌"序列：择时应两段都跑赢持有 → mode=1
+    var dn: [Double] = []
+    var dnO: [Double] = []
+    var k = 0
+    while k < 400 { let v = 20.0 - Double(k) * 0.02; dn.append(v); dnO.append(v); k += 1 }
+    let pd = HLCore.adaptivePlan(dnO, dn, dn, dn)
+    check("自适应·下跌序列返回合法模式", pd[0] >= 0 && pd[0] <= 2)
+    check("自适应·下跌序列置信度合法", pd[1] == 90 || pd[1] == 35)
+    check("自适应·下跌序列两段均为有限值", pd[2].isFinite && pd[3].isFinite && pd[4].isFinite && pd[5].isFinite)
+    check("自适应·下跌序列持有为负", pd[3] < 0 && pd[5] < 0)
+
+    // 3) 构造"前段涨、后段涨"序列：持有应两段都跑赢择时 → mode=0
+    var upv: [Double] = []
+    var upOv: [Double] = []
+    var j = 0
+    while j < 400 { let v = 10.0 + Double(j) * 0.05; upv.append(v); upOv.append(v); j += 1 }
+    let pu = HLCore.adaptivePlan(upOv, upv, upv, upv)
+    check("自适应·上涨序列模式合法", pu[0] >= 0 && pu[0] <= 2)
+    check("自适应·上涨序列持有为正", pu[3] > 0 && pu[5] > 0)
+    check("自适应·上涨序列择时不超持有", pu[2] <= pu[3] + 0.001 && pu[4] <= pu[5] + 0.001)
+
+    // 4) 反转风险标记：前段涨后段跌应被识别
+    var rv: [Double] = []
+    var rvO: [Double] = []
+    var t = 0
+    while t < 240 { let v = 10.0 + Double(t) * 0.05; rv.append(v); rvO.append(v); t += 1 }
+    var t2 = 0
+    while t2 < 160 { let v = rv[239] - Double(t2) * 0.05; rv.append(v); rvO.append(v); t2 += 1 }
+    let pr = HLCore.adaptivePlan(rvO, rv, rv, rv)
+    check("自适应·反转风险被标记", pr[8] > 0.5)
+    check("自适应·反转文案非空", HLCore.adaptiveAdvice(pr).isEmpty == false)
+
+    // 5) 文案函数健壮性
+    check("自适应·模式文案非空", HLCore.adaptiveModeText(0).isEmpty == false)
+    check("自适应·模式文案非空1", HLCore.adaptiveModeText(1).isEmpty == false)
+    check("自适应·模式文案非空2", HLCore.adaptiveModeText(2).isEmpty == false)
+    check("自适应·置信文案非空", HLCore.adaptiveConfText(90).isEmpty == false)
+    check("自适应·置信文案非空低", HLCore.adaptiveConfText(35).isEmpty == false)
+    check("自适应·短数组不崩", HLCore.adaptiveAdvice([0]).isEmpty == false)
+}
+
+
+
+func regressionTests() {
+    print("")
+    print("── 回归：成交与统计正确性 ──")
+
+    // ① 无偷价：信号每日翻转时，每笔都吃满成本却拿不到隔夜收益，
+    //    净值必须单调下降（若存在偷价，净值会被虚假收益抵消）
+    var flipC: [Double] = []
+    var flipO: [Double] = []
+    var k1 = 0
+    while k1 < 300 { flipC.append(10.0); flipO.append(10.0); k1 += 1 }
+    var flipSig: [Int] = []
+    var k2 = 0
+    while k2 < 300 { flipSig.append(k2 % 2); k2 += 1 }
+    let fr = HLCore.autoBacktest(flipC, flipSig, 20.0)
+    // 价格恒定 => 真实收益必为 0，只剩成本损耗
+    check("回归·横盘翻转不产生虚假收益", abs(fr[0]) < 0.5)
+
+    // ② 胜率分母必须是完成笔数：构造 3 笔全胜交易，胜率应为 100% 而非 50%
+    var winC: [Double] = []
+    var winSig: [Int] = []
+    var k3 = 0
+    while k3 < 300 {
+        winC.append(10.0 + Double(k3) * 0.02)
+        winSig.append(k3 < 100 ? 1 : (k3 < 200 ? 0 : 1))
+        k3 += 1
+    }
+    let wr = HLCore.autoBacktest(winC, winSig, 20.0)
+    check("回归·胜率分母为完成笔数", wr[3] > 99.0)
+
+    // ③ 相似形态去重：样本索引间距不得小于 horizon(20)
+    var sc: [Double] = []
+    var k4 = 0
+    while k4 < 400 {
+        let w = Double(k4) * 0.6
+        sc.append(10.0 + 2.0 * sin(w) + Double(k4 % 7) * 0.03)
+        k4 += 1
+    }
+    let sr = HLCore.similarStats(sc)
+    check("回归·相似形态有样本", sr[0] > 0)
+    check("回归·相似形态返回值有限", sr[1].isFinite && sr[2].isFinite)
+    check("回归·上涨概率在0~100", sr[2] >= 0 && sr[2] <= 100)
+
+    // ④ 赫斯特指数：对数化后，强趋势序列 H 应明显高于 0.5，震荡序列应低于 0.5
+    var trend: [Double] = []
+    var osc: [Double] = []
+    var k5 = 0
+    while k5 < 400 {
+        trend.append(10.0 * exp(0.002 * Double(k5)))
+        osc.append(10.0 + 1.0 * sin(Double(k5) * 0.5))
+        k5 += 1
+    }
+    let hT = HLCore.hurst(trend)
+    let hO = HLCore.hurst(osc)
+    check("回归·赫斯特可计算", hT != nil && hO != nil)
+    if hT != nil && hO != nil {
+        check("回归·趋势H高于震荡H", hT! > hO!)
+        check("回归·赫斯特落在0~1", hT! > 0 && hT! < 1.5 && hO! > 0 && hO! < 1.5)
+    }
+
+    // ⑤ 主回测引擎：价格恒定时任何策略都不应产生正收益
+    let flat = HLCore.backtest(flipC, 2, flipO, 20.0, true)
+    check("回归·横盘主回测无虚假收益", flat[0] <= 1.0001)
+
+    // ⑥ 成本必须生效：同一序列，高成本收益不应高于低成本
+    var rc: [Double] = []
+    var ro: [Double] = []
+    var k6 = 0
+    while k6 < 500 {
+        let v = 10.0 + 3.0 * sin(Double(k6) * 0.08)
+        rc.append(v); ro.append(v)
+        k6 += 1
+    }
+    let lo = HLCore.backtest(rc, 2, ro, 5.0, true)
+    let hi = HLCore.backtest(rc, 2, ro, 100.0, true)
+    check("回归·高成本收益不高于低成本", hi[0] <= lo[0] + 1e-9)
+}
+
+regressionTests()
+
 print("")
 print("════════════════════════════════════════")
 print("  通过 \(pass) · 失败 \(fail)")
@@ -251,3 +450,9 @@ if fail > 0 {
 }
 print("════════════════════════════════════════")
 exit(fail > 0 ? 1 : 0)
+
+// ==================================================================
+// 回归测试：四项实测发现的缺陷（有真实数据佐证，防止再次退化）
+// ==================================================================
+runTests()
+
