@@ -78,11 +78,11 @@ while bi < baseR.count {
     bi += 1
 }
 let cSame = HLCore.hlCorr(sameA, sameB)
-check(abs(cSame - 1.0) < 0.001, "完全同向序列相关系数=1 (得\(cSame))")
+check("完全同向序列相关系数=1 (得\(cSame))", abs(cSame - 1.0) < 0.001)
 
 // 完全反向序列应为 -1
 let cInv = HLCore.hlCorr(sameA, invB)
-check(abs(cInv + 1.0) < 0.001, "完全反向序列相关系数=-1 (得\(cInv))")
+check("完全反向序列相关系数=-1 (得\(cInv))", abs(cInv + 1.0) < 0.001)
 
 // 相关系数必须在 [-1, 1]
 var rnd1: [Double] = []
@@ -95,28 +95,45 @@ for _ in 0..<200 {
     rnd2.append(Double(sd % 1000) / 10.0 + 10.0)
 }
 let cRnd = HLCore.hlCorr(rnd1, rnd2)
-check(cRnd >= -1.0001 && cRnd <= 1.0001, "随机序列相关系数在[-1,1] (得\(cRnd))")
+check("随机序列相关系数在[-1,1] (得\(cRnd))", cRnd >= -1.0001 && cRnd <= 1.0001)
 
 // 长度不足应返回 0
 let short = [1.0, 2.0, 3.0]
-check(HLCore.hlCorr(short, short) == 0, "样本不足返回0")
+check("样本不足返回0", HLCore.hlCorr(short, short) == 0)
 
 // 动量：上涨序列应为正，下跌应为负
 let upC = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]
 let dnC = [10.0, 9.0, 8.0, 7.0, 6.0, 5.0, 4.0, 3.0, 2.0, 1.0]
-check(HLCore.hlMom(upC, 5) > 0, "上涨序列动量为正")
-check(HLCore.hlMom(dnC, 5) < 0, "下跌序列动量为负")
-check(HLCore.hlMom(upC, 0) == 0, "回看期为0返回0")
-check(HLCore.hlMom(upC, 100) == 0, "回看期超长返回0")
+check("上涨序列动量为正", HLCore.hlMom(upC, 5) > 0)
+check("下跌序列动量为负", HLCore.hlMom(dnC, 5) < 0)
+check("回看期为0返回0", HLCore.hlMom(upC, 0) == 0)
+check("回看期超长返回0", HLCore.hlMom(upC, 100) == 0)
 
 // 区间收益与回撤
-check(abs(HLCore.hlRangeRet([10.0, 15.0]) - 0.5) < 0.0001, "区间收益 10->15 = +50%")
-check(HLCore.hlMaxDD([10.0, 5.0, 12.0]) < 0, "存在回撤时为负")
-check(HLCore.hlMaxDD([10.0, 11.0, 12.0]) == 0, "单调上涨回撤为0")
+check("区间收益 10->15 = +50%", abs(HLCore.hlRangeRet([10.0, 15.0]) - 0.5) < 0.0001)
+check("存在回撤时为负", HLCore.hlMaxDD([10.0, 5.0, 12.0]) < 0)
+check("单调上涨回撤为0", HLCore.hlMaxDD([10.0, 11.0, 12.0]) == 0)
 
 print("  同向=\(String(format: "%.4f", cSame)) 反向=\(String(format: "%.4f", cInv)) 随机=\(String(format: "%.4f", cRnd))")
 
 print("")
+
+// ============================================================
+// 6) 防偷价回归（look-ahead）
+//    构造：长期横盘 1.0，末尾抬价使双均线【仅在第 103 期】才发出买入信号。
+//    修正后：买入价 = 末日开盘 5.0，结算价 = 末日收盘 5.0 -> 收益 ≈ 0（仅手续费）
+//    若退回偷价写法（收益取 op[i-1]->op[i]）会算出 ≈ +376%
+// ============================================================
+do {
+    var c = [Double](repeating: 1.0, count: 100)
+    c.append(1.0); c.append(1.0); c.append(1.0); c.append(1.05); c.append(5.0)
+    let o = c
+    let r = HLCore.backtest(c, 2, o, 20.0, true)
+    let gain = (r[0] - 1.0) * 100.0
+    check("防偷价·不得计入信号产生前的涨幅", gain < 5.0,
+          String(format: "收益=%.2f%%（偷价写法会得到约+376%%）", gain))
+}
+
 print("════════════════════════════════════════")
 print("  算法验证（云端真实运行）")
 print("════════════════════════════════════════")
@@ -162,22 +179,42 @@ check("CVaR ≤ VaR（尾部更差）", cv95 <= v95, "VaR=\(v95) CVaR=\(cv95)")
 check("volCone 非负", (HLCore.volCone(rets100, 5) ?? -1) >= 0)
 
 // 蒙特卡洛：分位必须单调递增
+// 注意：序列必须 >= 30 点，否则 monteCarlo 走退化分支返回全 0（测试会假通过）
+var mxSeed: UInt64 = 20250101
+var mcC: [Double] = [10.0]
+var mxI = 0
+while mxI < 300 {
+    mxSeed = mxSeed &* 6364136223846793005 &+ 1442695040888963407
+    mcC.append(mcC[mxI] * (1.0 + Double(mxSeed % 2000) / 100000.0 - 0.01))
+    mxI += 1
+}
 var seed: UInt64 = 12345
-let mc = HLCore.monteCarlo(upSeq + [16.0, 17.0, 18.0], 20, 400, seed)
+let mc = HLCore.monteCarlo(mcC, 20, 400, seed)
+check("蒙特卡洛 序列足够长(非退化)", mc[4] > 0 && mc[0] > 0,
+      "\(mc.map { String(format: "%.3f", $0) }.joined(separator: " "))")
 check("蒙特卡洛 分位单调递增",
       mc[0] <= mc[1] && mc[1] <= mc[2] && mc[2] <= mc[3] && mc[3] <= mc[4],
       "\(mc.map { String(format: "%.3f", $0) }.joined(separator: " "))")
 
 // 蒙特卡洛确定性：同种子两次结果相同
-let mc2 = HLCore.monteCarlo(upSeq + [16.0, 17.0, 18.0], 20, 400, 12345)
+let mc2 = HLCore.monteCarlo(mcC, 20, 400, 12345)
 check("蒙特卡洛 同种子可复现", mc == mc2)
 
-// 回测：一直持有应等于首尾比
-let btHold = HLCore.backtest(seq + [6.0, 7.0, 8.0] + Array(repeating: 5.0, count: 70), 0)
-check("回测 一直持有=首尾比", btHold[0] > 0, "倍数 \(String(format: "%.4f", btHold[0]))")
+// 蒙特卡洛：不同种子结果应不同（防止随机数被写死）
+let mc3 = HLCore.monteCarlo(mcC, 20, 400, 999)
+check("蒙特卡洛 不同种子结果不同", mc != mc3)
 
-// 信号质量：样本数非负
-check("signalQuality 返回3项", HLCore.signalQuality(upSeq, 0).count == 3)
+// 回测：一直持有应等于首尾比（真正比对，而非只看 > 0）
+let btC = mcC
+let btHold = HLCore.backtest(btC, 0)
+let expectHold = btC[btC.count - 1] / btC[1] - 1.0
+check("回测 一直持有=首尾比", abs(btHold[0] - (1.0 + expectHold)) < 0.02,
+      "倍数 \(String(format: "%.4f", btHold[0])) 期望 \(String(format: "%.4f", 1.0 + expectHold))")
+
+// 信号质量：样本数非负（用足够长序列，避免走 <90 的退化分支）
+check("signalQuality 返回3项", HLCore.signalQuality(mcC, 0).count == 3)
+check("signalQuality 有真实样本", HLCore.signalQuality(mcC, 0)[0] > 0,
+      "红灯样本 \(Int(HLCore.signalQuality(mcC, 0)[0]))")
 
 // 赫斯特：平滑序列（二次积分）的 H 应显著高于粗糙序列（一阶差分）
 // 注意：不能用完美等差序列 —— 各 lag 的差分标准差恒为 0，hurst 会返回 nil
@@ -408,6 +445,36 @@ do {
     check("自适应·置信文案非空低", HLCore.adaptiveConfText(35).isEmpty == false)
     check("自适应·短数组不崩", HLCore.adaptiveAdvice([0]).isEmpty == false)
 }
+
+print("")
+print("【资产分类】标的中性框架 —— 工具不绑定单一标的")
+check("513770 判为港股/中概", HLCore.assetClass("sh513770") == 2)
+check("513050 判为港股/中概", HLCore.assetClass("sh513050") == 2)
+check("159941 判为海外市场", HLCore.assetClass("sz159941") == 3)
+check("518880 判为商品", HLCore.assetClass("sh518880") == 4)
+check("511260 判为债券", HLCore.assetClass("sh511260") == 5)
+check("511990 判为货币", HLCore.assetClass("sh511990") == 6)
+check("510300 判为A股宽基", HLCore.assetClass("sh510300") == 0)
+check("512480 判为行业主题", HLCore.assetClass("sh512480") == 1)
+check("600519 判为个股", HLCore.assetClass("sh600519") == 7)
+check("hk00700 判为港股", HLCore.assetClass("hk00700") == 2)
+check("usAAPL 判为海外", HLCore.assetClass("usAAPL") == 3)
+let nm2 = HLCore.assetClassName(2)
+check("类别名非空", nm2.isEmpty == false)
+let ctx2 = HLCore.contextCodes(2)
+let ctx7 = HLCore.contextCodes(7)
+check("关联池非空", ctx2.isEmpty == false)
+check("不同类别关联池不同", ctx2 != ctx7)
+let ov0 = HLCore.overnightCodes(0)
+let ov3 = HLCore.overnightCodes(3)
+check("外围池非空", ov0.isEmpty == false)
+check("不同类别外围池不同", ov0 != ov3)
+check("中概标的展示成分", HLCore.hasHoldings("sh513770") == true)
+check("个股不展示成分", HLCore.hasHoldings("sh600519") == false)
+check("黄金不展示成分", HLCore.hasHoldings("sh518880") == false)
+check("ADR 仅港股中概显示", HLCore.showAdr(2) == true)
+check("A股标的隐藏 ADR", HLCore.showAdr(0) == false)
+check("digits6 提取数字", HLCore.digits6("sh513770") == "513770")
 
 print("")
 print("════════════════════════════════════════")

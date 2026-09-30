@@ -604,11 +604,9 @@ struct HLCore {
             }
 
             var px = c[i]
-            var prevPx = prev
             if nextOpen && opens != nil {
                 let op = opens!
                 if i < op.count { px = op[i] }
-                if i - 1 < op.count { prevPx = op[i - 1] }
             }
             if target > pos + 0.001 || target < pos - 0.001 {
                 let fee = abs(target - pos) * costBps / 10000.0
@@ -616,8 +614,15 @@ struct HLCore {
                 lastTrade = i
             }
             pos = target
+            // 收益从本期成交价结算到下一期开盘价（本期收益不含信号产生前的行情）
+            var nxtP = c[i]
+            if nextOpen && opens != nil {
+                let op = opens!
+                if i + 1 < op.count { nxtP = op[i + 1] }
+                else { nxtP = c[c.count - 1] }
+            }
             var ret = 1.0
-            if prevPx > 0 { ret = px / prevPx }
+            if px > 0 { ret = nxtP / px }
             v *= (1 + pos * (ret - 1))
             nav.append(v)
             i += 1
@@ -1088,11 +1093,9 @@ struct HLCore {
 
             // 执行价：次日开盘（避免用当日收盘价成交的未来函数）
             var px = c[i]
-            var prevPx = prev
             if nextOpen && opens != nil {
                 let op = opens!
                 if i < op.count { px = op[i] }
-                if i - 1 < op.count { prevPx = op[i - 1] }
             }
             if target > pos + 0.001 || target < pos - 0.001 {
                 // 交易成本：按仓位变动比例扣
@@ -1108,8 +1111,15 @@ struct HLCore {
             }
 
             pos = target
+            // 收益从本期成交价结算到下一期开盘价（消除"用信号日之前行情计收益"的偷价）
+            var nxtP = c[i]
+            if nextOpen && opens != nil {
+                let op = opens!
+                if i + 1 < op.count { nxtP = op[i + 1] }
+                else { nxtP = c[c.count - 1] }
+            }
             var ret = 1.0
-            if prevPx > 0 { ret = px / prevPx }
+            if px > 0 { ret = nxtP / px }
             v *= (1 + pos * (ret - 1))
             if v > peak { peak = v }
             let cur = (peak - v) / peak
@@ -2172,5 +2182,98 @@ struct HLCore {
 
     static func fmt1(_ x: Double) -> String { return String(format: "%.1f", x) }
     static func fmt0(_ x: Double) -> String { return String(format: "%.0f", x) }
+
+
+    // ============================================================
+    // 资产类别识别 —— 标的中性框架核心
+    // 工具不绑定任何单一标的：关联池 / 外围池 / 成分池
+    // 全部按当前标的的类别动态选择
+    // ============================================================
+    // 类别：0=A股宽基 1=A股行业主题 2=港股/中概 3=海外市场
+    //       4=商品 5=债券 6=货币 7=A股个股 8=其他
+
+    static func prefixIn(_ code6: String, _ list: [String]) -> Bool {
+        var i = 0
+        while i < list.count {
+            if code6.hasPrefix(list[i]) { return true }
+            i += 1
+        }
+        return false
+    }
+
+    static func digits6(_ codeIn: String) -> String {
+        let c = codeIn.lowercased()
+        var num = ""
+        for ch in c {
+            let s = String(ch)
+            if s >= "0" && s <= "9" { num = num + s }
+        }
+        return num
+    }
+
+    static func assetClass(_ codeIn: String) -> Int {
+        let c = codeIn.lowercased()
+        if c.hasPrefix("hk") { return 2 }
+        if c.hasPrefix("us") { return 3 }
+        let num = digits6(codeIn)
+        if num.count < 6 { return 8 }
+        let p6 = String(num.prefix(6))
+        if p6.hasPrefix("60") || p6.hasPrefix("68") { return 7 }
+        if p6.hasPrefix("00") || p6.hasPrefix("30") { return 7 }
+        if p6.hasPrefix("43") || p6.hasPrefix("83") || p6.hasPrefix("87") || p6.hasPrefix("88") { return 7 }
+        if prefixIn(p6, ["5119", "5116", "5118", "1590"]) { return 6 }
+        if prefixIn(p6, ["5112", "5110", "5113", "5111", "1596", "1598"]) { return 5 }
+        if prefixIn(p6, ["5188", "159934", "159937", "159981", "159980", "159985", "161226", "162411"]) { return 4 }
+        if prefixIn(p6, ["513100", "159941", "513500", "159612", "513300", "513520", "513080", "513030", "159632", "513850", "513390"]) { return 3 }
+        if prefixIn(p6, ["513770", "513050", "159792", "513330", "159605", "513690", "159636", "159892", "513970", "513120", "159561"]) { return 2 }
+        if prefixIn(p6, ["510300", "510310", "510050", "510500", "512500", "159915", "588000", "159901", "510880", "515080", "512100", "159949", "510180", "159919", "515800", "510210", "159629", "512550"]) { return 0 }
+        if p6.hasPrefix("51") || p6.hasPrefix("15") || p6.hasPrefix("16") || p6.hasPrefix("56") || p6.hasPrefix("58") { return 1 }
+        return 8
+    }
+
+    static func assetClassName(_ cls: Int) -> String {
+        if cls == 0 { return "A股宽基" }
+        if cls == 1 { return "行业/主题" }
+        if cls == 2 { return "港股/中概" }
+        if cls == 3 { return "海外市场" }
+        if cls == 4 { return "商品" }
+        if cls == 5 { return "债券" }
+        if cls == 6 { return "货币" }
+        if cls == 7 { return "个股" }
+        return "其他"
+    }
+
+    /// 关联指数/同类标的：与当前标的直接相关的市场参照
+    static func contextCodes(_ cls: Int) -> [String] {
+        if cls == 2 { return ["hkHSI", "hkHSTECH", "usIXIC", "sh000001"] }
+        if cls == 3 { return ["usIXIC", "usINX", "usDJI", "hkHSI"] }
+        if cls == 4 { return ["sh518880", "usIXIC", "sh000001"] }
+        if cls == 5 { return ["sh511260", "sh511010", "sh000001"] }
+        if cls == 6 { return ["sh511990", "sh511880", "sh000001"] }
+        if cls == 7 { return ["sh000001", "sz399001", "sz399006", "sh000300"] }
+        return ["sh000001", "sz399001", "sz399006", "sh000300"]
+    }
+
+    /// 隔夜外围：按标的市场归属选择，不再固定为港股视角
+    static func overnightCodes(_ cls: Int) -> [String] {
+        if cls == 2 { return ["hkHSI", "hkHSTECH", "usIXIC", "usINX"] }
+        if cls == 3 { return ["usIXIC", "usINX", "usDJI", "hkHSI"] }
+        if cls == 4 { return ["usIXIC", "usINX", "hkHSI", "sh000001"] }
+        if cls == 5 { return ["usIXIC", "hkHSI", "sh000001"] }
+        if cls == 6 { return ["sh000001", "sz399001"] }
+        if cls == 7 { return ["hkHSI", "usIXIC", "usINX", "sh000001"] }
+        return ["hkHSI", "usIXIC", "usINX", "usDJI"]
+    }
+
+    /// 仅当标的有已知持仓明细时才展示成分模块：避免把 A 的成分套到 B 上
+    static func hasHoldings(_ codeIn: String) -> Bool {
+        let num = digits6(codeIn)
+        if num.count < 6 { return false }
+        let p6 = String(num.prefix(6))
+        return prefixIn(p6, ["513770", "513050", "159792", "159605"])
+    }
+
+    /// ADR 参照仅对港股/中概标的有意义
+    static func showAdr(_ cls: Int) -> Bool { return cls == 2 }
 
 }

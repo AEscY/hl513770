@@ -224,6 +224,41 @@ struct HLPreset {
     let weight: Double
 }
 
+/// 代码 -> 资产类别名（供列表展示，避免在 View 内嵌套调用）
+func HLClassNameOf(_ code: String) -> String {
+    return HLCore.assetClassName(HLCore.assetClass(code))
+}
+
+/// 通用标的代码 -> 名称映射（与具体标的类型无关）
+func HLNameOf(_ code: String) -> String {
+    let c = code.lowercased()
+    if c == "hkhsi" { return "恒生指数" }
+    if c == "hkhstech" { return "恒生科技" }
+    if c == "usixic" { return "纳斯达克" }
+    if c == "usdji" { return "道琼斯" }
+    if c == "usinx" { return "标普500" }
+    if c == "sh000001" { return "上证指数" }
+    if c == "sz399001" { return "深证成指" }
+    if c == "sz399006" { return "创业板指" }
+    if c == "sh000300" { return "沪深300" }
+    if c == "sh000905" { return "中证500" }
+    let n = HLCore.digits6(code)
+    if n == "518880" { return "黄金ETF" }
+    if n == "159934" { return "黄金ETF" }
+    if n == "511260" { return "十年国债" }
+    if n == "511010" { return "国债ETF" }
+    if n == "511990" { return "货币ETF" }
+    if n == "511880" { return "货币ETF" }
+    if n == "510300" { return "沪深300ETF" }
+    if n == "513100" { return "纳指ETF" }
+    if n == "159941" { return "纳指ETF" }
+    if n == "513050" { return "中概互联" }
+    if n == "510500" { return "中证500ETF" }
+    if n == "159915" { return "创业板ETF" }
+    if n == "588000" { return "科创50ETF" }
+    return code
+}
+
 let HLGlobalIdx = [
     HLPreset(code: "hkHSTECH", name: "恒生科技", note: "港股科技 · 直接相关", weight: 0),
     HLPreset(code: "hkHSI", name: "恒生指数", note: "港股大盘", weight: 0),
@@ -270,7 +305,9 @@ final class HLModel: ObservableObject {
     // 跨资产对照的基准池（固定四类资产，用于"不该只持有单一标的"的横向比较）
     // 你自己的标的会自动并入，但基准池不随自选清空而消失
     var poolCodes: [String] {
-        var out: [String] = ["sh513770", "sh510300", "sh511260", "sh518880"]
+        // 四类资产代表：A股宽基 / 利率债 / 商品 / 海外权益
+        // 不含任何特定标的，当前自选自动并入
+        var out: [String] = ["sh510300", "sh511260", "sh518880", "sh513100"]
         var i = 0
         while i < watch.count {
             let c = watch[i].code
@@ -286,16 +323,12 @@ final class HLModel: ObservableObject {
         return out
     }
     func poolName(_ code: String) -> String {
-        if code == "sh513770" { return "港股互联网" }
-        if code == "sh510300" { return "沪深300" }
-        if code == "sh511260" { return "十年国债" }
-        if code == "sh518880" { return "黄金" }
         var i = 0
         while i < watch.count {
             if watch[i].code == code { return watch[i].name }
             i += 1
         }
-        return code
+        return HLNameOf(code)
     }
     @Published var poolCloses: [String: [Double]] = [:]
 
@@ -987,28 +1020,76 @@ final class HLModel: ObservableObject {
     // MARK: - 外围 / ADR / 成分股
 
     @Published var globalQuotes: [String: HLQuote] = [:]
+    @Published var contextQuotes: [String: HLQuote] = [:]
     @Published var adrQuotes: [String: HLQuote] = [:]
     @Published var holdQuotes: [String: HLQuote] = [:]
+
+    /// 当前标的的资产类别 —— 决定关联池/外围池/成分池的选择
+    var assetCls: Int { return HLCore.assetClass(curCode) }
+    var assetClsName: String { return HLCore.assetClassName(assetCls) }
+
+    /// 隔夜外围清单（按标的市场归属动态生成）
+    var overnightList: [HLPreset] {
+        var out: [HLPreset] = []
+        for c in HLCore.overnightCodes(assetCls) {
+            out.append(HLPreset(code: c, name: HLNameOf(c), note: "", weight: 0))
+        }
+        return out
+    }
+    /// 关联指数/同类标的清单
+    var contextList: [HLPreset] {
+        var out: [HLPreset] = []
+        for c in HLCore.contextCodes(assetCls) {
+            out.append(HLPreset(code: c, name: HLNameOf(c), note: "", weight: 0))
+        }
+        return out
+    }
+    /// 是否展示 ADR（仅港股/中概有意义）
+    var showAdrBlock: Bool { return HLCore.showAdr(assetCls) }
+    /// 隔夜外围标题
+    var overnightTitle: String { return "隔夜外围 · " + assetClsName }
+    /// 关联指数标题
+    var contextTitle: String { return "关联指数 · " + assetClsName }
+    /// 成分模块标题：取不到名称时退回类别名
+    var holdTitle: String {
+        let nm = quote?.name ?? ""
+        if nm.isEmpty { return "成分股体温计 · " + assetClsName }
+        return "成分股体温计 · " + nm
+    }
+    /// 是否展示成分模块（仅已知持仓明细的标的）
+    var showHoldBlock: Bool { return HLCore.hasHoldings(curCode) }
     @Published var intraday: [HLCandle] = []
     @Published var dataTime: String = ""
     @Published var dataSource: String = ""
     @Published var lastUpdate: Date = Date()
 
     func loadBrief() {
-        var g: [String] = []
-        for p in HLGlobalIdx { g.append(p.code) }
+        let cls = assetCls
+        var g: [String] = HLCore.overnightCodes(cls)
         loadQuotes(g) { map in
             self.globalQuotes = map
         }
-        var a: [String] = []
-        for p in HLAdrs { a.append(p.code) }
-        loadQuotes(a) { map in
-            self.adrQuotes = map
+        var cx: [String] = HLCore.contextCodes(cls)
+        loadQuotes(cx) { map in
+            self.contextQuotes = map
         }
-        var h: [String] = []
-        for p in HLHoldings { h.append(p.code) }
-        loadQuotes(h) { map in
-            self.holdQuotes = map
+        if HLCore.showAdr(cls) {
+            var a: [String] = []
+            for p in HLAdrs { a.append(p.code) }
+            loadQuotes(a) { map in
+                self.adrQuotes = map
+            }
+        } else {
+            self.adrQuotes = [:]
+        }
+        if HLCore.hasHoldings(curCode) {
+            var h: [String] = []
+            for p in HLHoldings { h.append(p.code) }
+            loadQuotes(h) { map in
+                self.holdQuotes = map
+            }
+        } else {
+            self.holdQuotes = [:]
         }
     }
 
@@ -3740,7 +3821,7 @@ struct HLWatchView: View {
                             Text("还没有添加任何标的")
                                 .font(.system(size: 13, weight: .semibold))
                                 .foregroundColor(HLText)
-                            Text("在下方输入 6 位代码添加，例如 513770、510300、600519\n添加后会自动保存，下次打开还在")
+                            Text("在下方输入 6 位代码添加，例如 510300、518880、600519\n添加后会自动保存，下次打开还在")
                                 .font(.system(size: 11.5))
                                 .foregroundColor(HLDim)
                                 .multilineTextAlignment(.center)
@@ -3763,7 +3844,7 @@ struct HLWatchView: View {
                         .foregroundColor(HLDim)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     HStack(spacing: 8) {
-                        TextField("6位代码，如 513770", text: $input)
+                        TextField("6位代码，如 510300", text: $input)
                             .keyboardType(.numbersAndPunctuation)
                             .font(.system(size: 14))
                             .padding(9)
@@ -3964,20 +4045,42 @@ struct HLBriefView: View {
                 .padding(13)
                 .background(RoundedRectangle(cornerRadius: 14).fill(HLCard))
 
-                // 隔夜外围
+                // 隔夜外围（按标的市场归属自动选择）
                 VStack(spacing: 4) {
-                    Text("隔夜外围")
+                    Text(m.overnightTitle)
                         .font(.system(size: 12, weight: .bold))
                         .foregroundColor(HLDim)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                    ForEach(HLGlobalIdx, id: \.code) { p in
+                    ForEach(m.overnightList, id: \.code) { p in
                         HLBriefRow(preset: p, quote: m.globalQuotes[p.code])
                     }
+                    Text("外围清单按当前标的市场归属自动切换（A股/港股/美股/商品各不同）。")
+                        .font(.system(size: 10))
+                        .foregroundColor(HLDim2)
+                        .padding(.top, 2)
                 }
                 .padding(13)
                 .background(RoundedRectangle(cornerRadius: 14).fill(HLCard))
 
-                // ADR
+                // 关联指数/同类标的（新增：标的中性的横向参照）
+                VStack(spacing: 4) {
+                    Text(m.contextTitle)
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundColor(HLDim)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    ForEach(m.contextList, id: \.code) { p in
+                        HLBriefRow(preset: p, quote: m.contextQuotes[p.code])
+                    }
+                    Text("与本标的直接相关的市场参照，用于判断是个股/行业问题还是大盘问题。")
+                        .font(.system(size: 10))
+                        .foregroundColor(HLDim2)
+                        .padding(.top, 2)
+                }
+                .padding(13)
+                .background(RoundedRectangle(cornerRadius: 14).fill(HLCard))
+
+                // ADR（仅港股/中概标的显示）
+                if m.showAdrBlock {
                 VStack(spacing: 4) {
                     Text("中概股 ADR · 隔夜")
                         .font(.system(size: 12, weight: .bold))
@@ -3996,10 +4099,12 @@ struct HLBriefView: View {
                 }
                 .padding(13)
                 .background(RoundedRectangle(cornerRadius: 14).fill(HLCard))
+                }
 
-                // 成分股
+                // 成分股/持仓快照（仅当该标的持仓明细已知时展示）
+                if m.showHoldBlock {
                 VStack(spacing: 4) {
-                    Text("成分股体温计 · 港股互联网")
+                    Text(m.holdTitle)
                         .font(.system(size: 12, weight: .bold))
                         .foregroundColor(HLDim)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -4018,6 +4123,7 @@ struct HLBriefView: View {
                 }
                 .padding(13)
                 .background(RoundedRectangle(cornerRadius: 14).fill(HLCard))
+                }
 
                 // 自选一览
                 VStack(spacing: 4) {
@@ -4028,16 +4134,22 @@ struct HLBriefView: View {
                     ForEach(m.watch, id: \.code) { w in
                         HStack {
                             Text(w.name).font(.system(size: 12.5)).foregroundColor(HLText)
+                            Text(HLClassNameOf(w.code))
+                                .font(.system(size: 10))
+                                .foregroundColor(HLDim2)
                             Spacer()
                             Text(hfmt(w.weight, 3)).font(.system(size: 12.5)).foregroundColor(HLText)
                         }
                         .padding(.vertical, 4)
                     }
+                    Text("类别由代码规则自动判定，决定该标的的外围参照与关联指数。")
+                        .font(.system(size: 10))
+                        .foregroundColor(HLDim2)
                 }
                 .padding(13)
                 .background(RoundedRectangle(cornerRadius: 14).fill(HLCard))
 
-                Text("外围、ADR、成分股均为实时网络请求（腾讯主源 / 新浪备源）。\n标注「—」表示该项当前未取到数据，不代表为零。\n数据来自公开接口，非官方授权，可能延迟或失效。\n本工具仅为纪律辅助，不构成投资建议。")
+                Text("外围、关联指数、ADR、成分股均按当前标的类别动态选取，且为实时网络请求（腾讯主源 / 新浪备源）。\n标注「—」表示该项当前未取到数据，不代表为零。\n数据来自公开接口，非官方授权，可能延迟或失效。\n本工具仅为纪律辅助，不构成投资建议。")
                     .font(.system(size: 10))
                     .foregroundColor(HLDim2)
             }
