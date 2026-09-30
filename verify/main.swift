@@ -57,16 +57,32 @@ func fetch(_ code: String, _ len: Int) -> [Double] {
 print("")
 print("──── 跨资产配置算法 ────")
 // 相关系数：完全相同序列应为 1
-let sameA = [10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0, 17.0]
-let sameB = [10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0, 17.0]
+// 注意：hlCorr 要求样本数 >= 30，测试序列必须足够长
+// 用「同一组收益率取负号」构造完全反向序列，保证相关系数严格 = -1
+var baseR: [Double] = []
+var bseed: UInt64 = 20240930
+var bi = 0
+while bi < 60 {
+    bseed = bseed &* 6364136223846793005 &+ 1442695040888963407
+    baseR.append(Double(bseed % 2000) / 100000.0 - 0.01)
+    bi += 1
+}
+var sameA: [Double] = [10.0]
+var sameB: [Double] = [10.0]
+var invB: [Double] = [10.0]
+bi = 0
+while bi < baseR.count {
+    sameA.append(sameA[bi] * (1.0 + baseR[bi]))
+    sameB.append(sameB[bi] * (1.0 + baseR[bi]))
+    invB.append(invB[bi] * (1.0 - baseR[bi]))
+    bi += 1
+}
 let cSame = HLCore.hlCorr(sameA, sameB)
-ck(abs(cSame - 1.0) < 0.001, "完全同向序列相关系数=1 (得\(cSame))")
+check(abs(cSame - 1.0) < 0.001, "完全同向序列相关系数=1 (得\(cSame))")
 
 // 完全反向序列应为 -1
-var invB: [Double] = []
-for v in sameA { invB.append(20.0 - v) }
 let cInv = HLCore.hlCorr(sameA, invB)
-ck(abs(cInv + 1.0) < 0.001, "完全反向序列相关系数=-1 (得\(cInv))")
+check(abs(cInv + 1.0) < 0.001, "完全反向序列相关系数=-1 (得\(cInv))")
 
 // 相关系数必须在 [-1, 1]
 var rnd1: [Double] = []
@@ -79,24 +95,24 @@ for _ in 0..<200 {
     rnd2.append(Double(sd % 1000) / 10.0 + 10.0)
 }
 let cRnd = HLCore.hlCorr(rnd1, rnd2)
-ck(cRnd >= -1.0001 && cRnd <= 1.0001, "随机序列相关系数在[-1,1] (得\(cRnd))")
+check(cRnd >= -1.0001 && cRnd <= 1.0001, "随机序列相关系数在[-1,1] (得\(cRnd))")
 
 // 长度不足应返回 0
 let short = [1.0, 2.0, 3.0]
-ck(HLCore.hlCorr(short, short) == 0, "样本不足返回0")
+check(HLCore.hlCorr(short, short) == 0, "样本不足返回0")
 
 // 动量：上涨序列应为正，下跌应为负
 let upC = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]
 let dnC = [10.0, 9.0, 8.0, 7.0, 6.0, 5.0, 4.0, 3.0, 2.0, 1.0]
-ck(HLCore.hlMom(upC, 5) > 0, "上涨序列动量为正")
-ck(HLCore.hlMom(dnC, 5) < 0, "下跌序列动量为负")
-ck(HLCore.hlMom(upC, 0) == 0, "回看期为0返回0")
-ck(HLCore.hlMom(upC, 100) == 0, "回看期超长返回0")
+check(HLCore.hlMom(upC, 5) > 0, "上涨序列动量为正")
+check(HLCore.hlMom(dnC, 5) < 0, "下跌序列动量为负")
+check(HLCore.hlMom(upC, 0) == 0, "回看期为0返回0")
+check(HLCore.hlMom(upC, 100) == 0, "回看期超长返回0")
 
 // 区间收益与回撤
-ck(abs(HLCore.hlRangeRet([10.0, 15.0]) - 0.5) < 0.0001, "区间收益 10->15 = +50%")
-ck(HLCore.hlMaxDD([10.0, 5.0, 12.0]) < 0, "存在回撤时为负")
-ck(HLCore.hlMaxDD([10.0, 11.0, 12.0]) == 0, "单调上涨回撤为0")
+check(abs(HLCore.hlRangeRet([10.0, 15.0]) - 0.5) < 0.0001, "区间收益 10->15 = +50%")
+check(HLCore.hlMaxDD([10.0, 5.0, 12.0]) < 0, "存在回撤时为负")
+check(HLCore.hlMaxDD([10.0, 11.0, 12.0]) == 0, "单调上涨回撤为0")
 
 print("  同向=\(String(format: "%.4f", cSame)) 反向=\(String(format: "%.4f", cInv)) 随机=\(String(format: "%.4f", cRnd))")
 
@@ -163,11 +179,44 @@ check("回测 一直持有=首尾比", btHold[0] > 0, "倍数 \(String(format: "
 // 信号质量：样本数非负
 check("signalQuality 返回3项", HLCore.signalQuality(upSeq, 0).count == 3)
 
-// 赫斯特：单调上升趋势应 H 较高
-if let h = HLCore.hurst(upSeq + Array((16...80).map { Double($0) })) {
-    check("上升趋势 H 偏高", h > 0.4, "H=\(String(format: "%.3f", h))")
+// 赫斯特：平滑序列（二次积分）的 H 应显著高于粗糙序列（一阶差分）
+// 注意：不能用完美等差序列 —— 各 lag 的差分标准差恒为 0，hurst 会返回 nil
+var hz: [UInt64] = []
+var hseed: UInt64 = 999
+var hi0 = 0
+while hi0 < 400 {
+    hseed = hseed &* 6364136223846793005 &+ 1442695040888963407
+    hz.append(hseed)
+    hi0 += 1
+}
+var hn: [Double] = []
+var hi1 = 0
+while hi1 < hz.count {
+    hn.append(Double((hz[hi1] >> 16) % 1000) / 1000.0 - 0.5)
+    hi1 += 1
+}
+var smooth: [Double] = []
+var rough: [Double] = []
+var acc1 = 0.0
+var acc2 = 0.0
+var hi2 = 0
+while hi2 < hn.count {
+    acc1 = acc1 + hn[hi2] * 0.02
+    acc2 = acc2 + acc1
+    smooth.append(100.0 + acc2)
+    hi2 += 1
+}
+var hi3 = 0
+while hi3 + 1 < hn.count {
+    rough.append(100.0 + (hn[hi3 + 1] - hn[hi3]) * 0.5)
+    hi3 += 1
+}
+if let hS = HLCore.hurst(smooth), let hR = HLCore.hurst(rough) {
+    check("赫斯特·平滑序列 H 偏高", hS > 0.6, "H=\(String(format: "%.3f", hS))")
+    check("赫斯特·粗糙序列 H 偏低", hR < 0.4, "H=\(String(format: "%.3f", hR))")
+    check("赫斯特·平滑 > 粗糙", hS > hR, "\(String(format: "%.3f", hS)) > \(String(format: "%.3f", hR))")
 } else {
-    check("上升趋势 H 偏高", false, "返回 nil")
+    check("赫斯特·平滑与粗糙对比", false, "返回 nil")
 }
 
 // ---------- 第二层：真实数据不变量 ----------

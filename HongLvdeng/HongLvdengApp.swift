@@ -1039,6 +1039,27 @@ final class HLModel: ObservableObject {
     var holdEstimate: Double? { weighted(list: HLHoldings, quotes: holdQuotes) }
     var holdCoverage: Double { coverage(list: HLHoldings, quotes: holdQuotes) }
 
+    /// 等权重平均：不依赖静态权重快照，避免权重过期造成的偏差
+    func equalWeight(list: [HLPreset], quotes: [String: HLQuote]) -> Double? {
+        var se = 0.0
+        var n = 0.0
+        for p in list {
+            if let q = quotes[p.code] {
+                se += q.changePct
+                n += 1
+            }
+        }
+        if n <= 0 { return nil }
+        return se / n
+    }
+
+    var adrEqual: Double? { equalWeight(list: HLAdrs, quotes: adrQuotes) }
+    var holdEqual: Double? { equalWeight(list: HLHoldings, quotes: holdQuotes) }
+    var holdDivergence: Double? {
+        if let a = holdEstimate, let b = holdEqual { return a - b }
+        return nil
+    }
+
     // MARK: - 技术指标
 
     func rsi(_ k: Int) -> Double? {
@@ -3965,7 +3986,8 @@ struct HLBriefView: View {
                     ForEach(HLAdrs, id: \.code) { p in
                         HLBriefRow(preset: p, quote: m.adrQuotes[p.code])
                     }
-                    hrow("加权估算", hfmtPct(m.adrEstimate), hcolor(m.adrEstimate))
+                    hrow("加权估算（静态权重快照）", hfmtPct(m.adrEstimate), hcolor(m.adrEstimate))
+                    hrow("等权平均（不依赖权重）", hfmtPct(m.adrEqual), hcolor(m.adrEqual))
                     hrow("覆盖权重", hfmt(m.adrCoverage, 1) + "%", HLDim)
                     Text("仅覆盖部分中概股权重，未含汇率与溢价折价。只作方向参考，不是开盘价预测。")
                         .font(.system(size: 10))
@@ -3984,8 +4006,15 @@ struct HLBriefView: View {
                     ForEach(HLHoldings, id: \.code) { p in
                         HLBriefRow(preset: p, quote: m.holdQuotes[p.code])
                     }
-                    hrow("加权方向", hfmtPct(m.holdEstimate), hcolor(m.holdEstimate))
+                    hrow("加权方向（静态权重快照）", hfmtPct(m.holdEstimate), hcolor(m.holdEstimate))
+                    hrow("等权平均（不依赖权重）", hfmtPct(m.holdEqual), hcolor(m.holdEqual))
+                    hrow("两者差异", hfmtPct(m.holdDivergence), hcolor(m.holdDivergence))
                     hrow("覆盖权重", hfmt(m.holdCoverage, 1) + "%", HLDim)
+                    Text("权重为前十大持仓的静态快照，会随基金调仓变化；差异大时以「等权平均」为准")
+                        .font(.system(size: 10))
+                        .foregroundColor(HLWarn)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.top, 2)
                 }
                 .padding(13)
                 .background(RoundedRectangle(cornerRadius: 14).fill(HLCard))
